@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="320dp"
+    android:height="180dp"
+    android:viewportWidth="320"
+    android:viewportHeight="180">
+    <!-- 背景漸層底色 -->
+    <path
+        android:fillColor="#FF111111"
+        android:pathData="M0,0h320v180h-320z" />
+    <!-- 幾何裝飾條 -->
+    <path
+        android:fillColor="#1AFFFFFF"
+        android:pathData="M0,0L180,0L120,180L0,180Z" />
+    <!-- 電視邊框與播放圖標 -->
+    <path
+        android:fillColor="#FF282828"
+        android:pathData="M50,45h80c5,0 9,4 9,9v62c0,5 -4,9 -9,9H50c-5,0 -9,-4 -9,-9V54C41,49 45,45 50,45z" />
+    <path
+        android:fillColor="#FFFF6D00"
+        android:pathData="M78,65l32,20l-32,20z" />
+    <!-- 標題文字裝飾條/塊 -->
+    <path
+        android:fillColor="#FFFFAB00"
+        android:pathData="M150,60h120v16h-120z" />
+    <path
+        android:fillColor="#80FFFFFF"
+        android:pathData="M150,86h90v10h-90z" />
+    <path
+        android:fillColor="#FFFF6D00"
+        android:pathData="M150,104h50v6h-50z" />
+</vector>

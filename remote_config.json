@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "primary_url": "https://huangguoai.com",
+  "backup_urls": [
+    "https://huangguoai.com",
+    "https://api1.huangguoju.com",
+    "https://bak.wtzxzltu.cc"
+  ],
+  "user_agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36 HuangGuoTV/1.0",
+  "inject_css": "html, body, #app, #root, .van-theme-dark { background: #000000 !important; background-color: #000000 !important; color: #ffffff !important; overflow-x: hidden !important; } video { display: block !important; margin: 0 auto !important; max-height: 100vh !important; object-fit: contain !important; } .video-container, .player-container, .swiper-container, .video-player, [class*='player-box'], [class*='video-wrap'] { margin-left: auto !important; margin-right: auto !important; max-width: 540px !important; } [class*='download'], [class*='app-down'], [class*='download-bar'], [id*='download'], .download-box, .app-download, .open-app-banner, .footer-app, a[href*='.apk'] { display: none !important; opacity: 0 !important; pointer-events: none !important; height: 0 !important; min-height: 0 !important; padding: 0 !important; margin: 0 !important; visibility: hidden !important; } ::-webkit-scrollbar { display: none !important; width: 0px !important; }",
+  "inject_js": "(function() { window.__hg_findVideo = function() { var videos = document.getElementsByTagName('video'); if (videos && videos.length > 0) { for (var i = 0; i < videos.length; i++) { if (videos[i].readyState > 0 || !videos[i].paused || videos[i].currentTime > 0) return videos[i]; } return videos[0]; } return null; }; window.__hg_togglePlay = function() { var v = window.__hg_findVideo(); if (v) { if (v.paused) { v.play(); } else { v.pause(); } return !v.paused; } return false; }; window.__hg_seek = function(deltaSeconds) { var v = window.__hg_findVideo(); if (v && v.duration) { v.currentTime = Math.max(0, Math.min(v.duration, v.currentTime + deltaSeconds)); } }; window.__hg_scrollBy = function(ratio) { var step = window.innerHeight * ratio; window.scrollBy({ top: step, behavior: 'smooth' }); }; window.__hg_triggerSwipe = function(direction) { var evtDown = new TouchEvent('touchstart', { bubbles: true, cancelable: true, touches: [new Touch({ identifier: 1, target: document.body, clientX: window.innerWidth / 2, clientY: direction > 0 ? window.innerHeight * 0.7 : window.innerHeight * 0.3 })] }); var evtUp = new TouchEvent('touchend', { bubbles: true, cancelable: true }); document.body.dispatchEvent(evtDown); setTimeout(function() { document.body.dispatchEvent(evtUp); }, 150); }; console.log('HuangGuoTV Helper JS injected successfully'); })();",
+  "github_repo": "pan8664716/HGTV",
+  "remote_config_url": "https://raw.githubusercontent.com/pan8664716/HGTV/main/remote_config.json"
+}

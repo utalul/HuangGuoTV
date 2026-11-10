@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="36dp"
+    android:height="36dp"
+    android:viewportWidth="36"
+    android:viewportHeight="36">
+    <!-- 外圈光環 -->
+    <path
+        android:fillColor="#80FF6D00"
+        android:strokeColor="#FFFFAB00"
+        android:strokeWidth="1.5"
+        android:pathData="M18,18m-15,0a15,15 0 1,1 30,0a15,15 0 1,1 -30,0" />
+    <!-- 內圈準心 -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:strokeColor="#FF000000"
+        android:strokeWidth="0.8"
+        android:pathData="M18,18m-4,0a4,4 0 1,1 8,0a4,4 0 1,1 -8,0" />
+    <!-- 上下左右微小十字標示 -->
+    <path
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="1.5"
+        android:pathData="M18,5L18,11 M18,25L18,31 M5,18L11,18 M25,18L31,18" />
+</vector>

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="black">#FF000000</color>
+    <color name="white">#FFFFFFFF</color>
+    <color name="brand_orange">#FFFF6D00</color>
+    <color name="brand_yellow">#FFFFD600</color>
+    <color name="translucent_dark">#D8121212</color>
+    <color name="dialog_border">#33FFFFFF</color>
+    <color name="cursor_glow">#99FF6D00</color>
+    <color name="cursor_center">#FFFFFFFF</color>
+    <color name="focus_highlight">#FFFFAB00</color>
+    <color name="btn_normal">#26FFFFFF</color>
+    <color name="btn_focused">#FFFA8C16</color>
+</resources>
