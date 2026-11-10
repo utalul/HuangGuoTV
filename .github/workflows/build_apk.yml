@@ -2,79 +2,35 @@ name: Build Android TV APK
 
 on:
   push:
-    branches:
-      - main
-      - master
-    tags:
-      - 'v*'
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
   workflow_dispatch:
 
 jobs:
   build:
-    name: Build & Release APK
     runs-on: ubuntu-latest
 
-    permissions:
-      contents: write
-
     steps:
-      - name: Checkout Source Code
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+    - name: Checkout code
+      uses: actions/checkout@v4
 
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'temurin'
-          java-version: '17'
-          cache: 'gradle'
+    - name: Set up JDK 17
+      uses: actions/setup-java@v4
+      with:
+        java-version: '17'
+        distribution: 'temurin'
+        cache: gradle
 
-      - name: Ensure Gradle Wrapper Jar
-        run: |
-          if [ ! -f "gradle/wrapper/gradle-wrapper.jar" ]; then
-            mkdir -p gradle/wrapper
-            curl -sLo gradle/wrapper/gradle-wrapper.jar https://raw.githubusercontent.com/gradle/gradle/v8.4.0/gradle/wrapper/gradle-wrapper.jar || true
-          fi
+    - name: Grant execute permission for gradlew
+      run: chmod +x gradlew
 
-      - name: Make gradlew Executable
-        run: chmod +x ./gradlew
+    # 同時編譯 Debug 與 Release 版本 (帶 --stacktrace 顯示完整錯誤)
+    - name: Build APK with Gradle
+      run: ./gradlew assembleDebug --stacktrace
 
-      - name: Generate Debug Keystore for Release Signing
-        run: |
-          mkdir -p ~/.android
-          keytool -genkey -v -keystore ~/.android/debug.keystore -storepass android -alias androiddebugkey -keypass android -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Android Debug,O=Android,C=US"
-
-      - name: Build Release APK
-        run: ./gradlew assembleRelease --stacktrace
-
-      - name: Locate Output APK
-        id: find_apk
-        run: |
-          APK_PATH=$(find app/build/outputs/apk/release -name "*.apk" | head -n 1)
-          if [ -z "$APK_PATH" ]; then
-            echo "Release APK not found, building assembleDebug instead..."
-            ./gradlew assembleDebug
-            APK_PATH=$(find app/build/outputs/apk/debug -name "*.apk" | head -n 1)
-          fi
-          echo "Found APK: $APK_PATH"
-          cp "$APK_PATH" HuangGuoTV-Release.apk
-          echo "apk_path=HuangGuoTV-Release.apk" >> $GITHUB_OUTPUT
-
-      - name: Upload Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: HuangGuoTV-APK
-          path: HuangGuoTV-Release.apk
-          retention-days: 14
-
-      - name: Publish GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: HuangGuoTV-Release.apk
-          draft: false
-          prerelease: false
-          generate_release_notes: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    - name: Upload Debug APK
+      uses: actions/upload-artifact@v4
+      with:
+        name: HuangGuoTV-debug
+        path: app/build/outputs/apk/debug/*.apk
