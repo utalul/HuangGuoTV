@@ -178,13 +178,21 @@ class MainActivity : AppCompatActivity() {
             }
 
             override fun onHideCustomView() {
-                if (customVideoView == null) return
-                cursorContainer.removeView(customVideoView)
-                customVideoView = null
-                customViewCallback?.onCustomViewHidden()
-                webView.visibility = View.VISIBLE
+                hideCustomVideoView()
             }
         }
+    }
+
+    /**
+     * 退出全螢幕自訂影片視圖
+     */
+    private fun hideCustomVideoView() {
+        val view = customVideoView ?: return
+        cursorContainer.removeView(view)
+        customVideoView = null
+        customViewCallback?.onCustomViewHidden()
+        customViewCallback = null
+        webView.visibility = View.VISIBLE
     }
 
     /**
@@ -328,7 +336,7 @@ class MainActivity : AppCompatActivity() {
 
                     // 如果處於自訂全螢幕影片視圖中，退出全螢幕
                     if (customVideoView != null) {
-                        customViewCallback?.onHideCustomView()
+                        hideCustomVideoView()
                         return true
                     }
 
