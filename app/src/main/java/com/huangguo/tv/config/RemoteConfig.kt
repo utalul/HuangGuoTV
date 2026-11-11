@@ -17,8 +17,8 @@ data class RemoteConfig(
     val userAgent: String = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36 HuangGuoTV/1.0",
     val injectCss: String = "",
     val injectJs: String = "",
-    val githubRepo: String = "pan8664716/HGTV",
-    val remoteConfigUrl: String = "https://raw.githubusercontent.com/pan8664716/HGTV/main/remote_config.json"
+    val githubRepo: String = "mustresource/HuangGuoTV",
+    val remoteConfigUrl: String = "https://raw.githubusercontent.com/mustresource/HuangGuoTV/main/remote_config.json"
 ) {
     companion object {
         fun fromJson(jsonStr: String): RemoteConfig {
@@ -34,6 +34,18 @@ data class RemoteConfig(
                 backupList.add(obj.optString("primary_url", "https://huangguoai.com"))
             }
 
+            var repo = obj.optString("github_repo", "mustresource/HuangGuoTV")
+            if (repo.contains("HGTV", ignoreCase = true) || repo.isBlank()) {
+                repo = "mustresource/HuangGuoTV"
+            }
+            var configUrl = obj.optString(
+                "remote_config_url",
+                "https://raw.githubusercontent.com/mustresource/HuangGuoTV/main/remote_config.json"
+            )
+            if (configUrl.contains("HGTV", ignoreCase = true)) {
+                configUrl = "https://raw.githubusercontent.com/mustresource/HuangGuoTV/main/remote_config.json"
+            }
+
             return RemoteConfig(
                 version = obj.optInt("version", 1),
                 primaryUrl = obj.optString("primary_url", "https://huangguoai.com"),
@@ -44,11 +56,8 @@ data class RemoteConfig(
                 ),
                 injectCss = obj.optString("inject_css", ""),
                 injectJs = obj.optString("inject_js", ""),
-                githubRepo = obj.optString("github_repo", "pan8664716/HGTV"),
-                remoteConfigUrl = obj.optString(
-                    "remote_config_url",
-                    "https://raw.githubusercontent.com/pan8664716/HGTV/main/remote_config.json"
-                )
+                githubRepo = repo,
+                remoteConfigUrl = configUrl
             )
         }
     }

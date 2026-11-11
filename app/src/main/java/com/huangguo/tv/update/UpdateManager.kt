@@ -51,8 +51,7 @@ class UpdateManager(private val activity: Activity) {
      */
     fun checkForUpdates(isManual: Boolean = false) {
         scope.launch {
-            val repo = ConfigManager.getInstance(activity).getConfig().githubRepo
-            val apiUrl = "https://api.github.com/repos/$repo/releases/latest"
+            val apiUrl = "https://api.github.com/repos/mustresource/HuangGuoTV/releases/latest"
 
             val info = withContext(Dispatchers.IO) {
                 fetchLatestRelease(apiUrl)

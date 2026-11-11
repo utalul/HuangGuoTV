@@ -16,7 +16,6 @@ import android.view.ViewGroup
 import android.view.WindowManager
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
-import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -35,7 +34,7 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         private const val TAG = "HuangGuoTV_Main"
-        private const val DOUBLE_CLICK_INTERVAL = 400L // 雙擊判斷毫秒數
+        private const val DOUBLE_CLICK_INTERVAL = 400L // 雙擊返回鍵時間間隔
         private const val EXIT_INTERVAL = 2000L
     }
 
@@ -81,8 +80,13 @@ class MainActivity : AppCompatActivity() {
         setupWebView()
         loadInitialPage()
 
-        // 啟動時背景異步拉取最新雲端防失聯配置，並靜默檢查更新
-        syncCloudConfigAndUpdates()
+        // 確保啟動時 WebView 立即獲取焦點
+        webView.isFocusable = true
+        webView.isFocusableInTouchMode = true
+        webView.requestFocus()
+
+        // 啟動時僅背景非同步拉取最新雲端防失聯配置，不再主動跳出更新彈窗
+        syncCloudConfigOnly()
     }
 
     private fun initViews() {
@@ -101,6 +105,11 @@ class MainActivity : AppCompatActivity() {
         // 啟用硬體加速並設定純黑底色
         webView.setLayerType(View.LAYER_TYPE_HARDWARE, null)
         webView.setBackgroundColor(0xFF000000.toInt())
+
+        // 確保電視端焦點能進入 WebView
+        webView.isFocusable = true
+        webView.isFocusableInTouchMode = true
+        webView.requestFocus()
 
         val settings = webView.settings
         settings.javaScriptEnabled = true
@@ -148,6 +157,13 @@ class MainActivity : AppCompatActivity() {
             override fun onPageFinished(view: WebView?, url: String?) {
                 super.onPageFinished(view, url)
                 loadingBar.visibility = View.GONE
+
+                // 頁面載入完成後重新確保焦點聚焦於 WebView
+                webView.isFocusable = true
+                webView.isFocusableInTouchMode = true
+                webView.requestFocus()
+
+                // 自動注入自訂 CSS/JS、成年驗證自動穿透與可焦點化處理
                 injectCustomStylesAndScripts()
             }
         }
@@ -193,6 +209,7 @@ class MainActivity : AppCompatActivity() {
         customViewCallback?.onCustomViewHidden()
         customViewCallback = null
         webView.visibility = View.VISIBLE
+        webView.requestFocus()
     }
 
     /**
@@ -229,15 +246,15 @@ class MainActivity : AppCompatActivity() {
 
     /**
      * 注入自訂 CSS 與 JS 腳本
-     * - 背景純黑
-     * - 直立短劇播放器居中
-     * - 隱藏下載 App 浮動橫幅
-     * - 注入輔助控制函數
+     * 包含：
+     * 1. 背景純黑、直立播放器置中、隱藏「下載 App」浮動橫幅
+     * 2. 自動穿透「年滿 18 歲」年齡確認彈窗並寫入 localStorage
+     * 3. 網頁可點擊元素支援 :focus 鮮紅高亮框與 tabindex 自動補全
      */
     private fun injectCustomStylesAndScripts() {
         val config = configManager.getConfig()
 
-        // 1. 注入 CSS (使用 Base64 編碼避免引號跳脫問題)
+        // 1. 注入 CSS (使用 Base64 編碼避免字元跳脫問題)
         val css = config.injectCss
         if (css.isNotEmpty()) {
             val encodedCss = Base64.encodeToString(css.toByteArray(), Base64.NO_WRAP)
@@ -257,7 +274,7 @@ class MainActivity : AppCompatActivity() {
             webView.evaluateJavascript(cssJs, null)
         }
 
-        // 2. 注入 JS 輔助函數
+        // 2. 注入 JS 輔助函數與穿透腳本
         val js = config.injectJs
         if (js.isNotEmpty()) {
             webView.evaluateJavascript(js, null)
@@ -265,9 +282,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * 背景非同步拉取最新遠端熱更新配置，若更新則在必要時平滑重載
+     * 啟動時僅同步雲端配置熱更新，不在啟動時彈出更新視窗
      */
-    private fun syncCloudConfigAndUpdates() {
+    private fun syncCloudConfigOnly() {
         lifecycleScope.launch {
             val updated = configManager.fetchRemoteConfig()
             if (updated) {
@@ -278,9 +295,6 @@ class MainActivity : AppCompatActivity() {
                     webView.loadUrl(newConfig.primaryUrl)
                 }
             }
-
-            // 檢查 App 自身 OTA 更新
-            updateManager.checkForUpdates(isManual = false)
         }
     }
 
@@ -291,7 +305,15 @@ class MainActivity : AppCompatActivity() {
         val keyCode = event.keyCode
         val action = event.action
 
-        // 1. 如果虛擬滑鼠模式開啟，優先交給 CursorLayout 處理 (上下左右與點擊)
+        // 1. 遙控器選單鍵 (MENU)：單擊即刻切換/呼出紅色虛擬滑鼠游標
+        if (keyCode == KeyEvent.KEYCODE_MENU || keyCode == KeyEvent.KEYCODE_SETTINGS) {
+            if (action == KeyEvent.ACTION_DOWN) {
+                cursorContainer.toggleCursorMode()
+            }
+            return true
+        }
+
+        // 2. 如果虛擬滑鼠模式開啟，優先交給 CursorLayout 處理 (平滑移動與座標點擊注入)
         if (cursorContainer.isCursorMode()) {
             if (keyCode != KeyEvent.KEYCODE_BACK && keyCode != KeyEvent.KEYCODE_MENU) {
                 val handled = cursorContainer.dispatchCursorKeyEvent(event, webView)
@@ -299,7 +321,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // 2. 處理長按「確認鍵」呼出 TV 控制選單
+        // 3. 處理長按「確認鍵」呼出 TV 控制選單
         if (keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER) {
             if (action == KeyEvent.ACTION_DOWN) {
                 if (event.repeatCount == 0) {
@@ -309,100 +331,58 @@ class MainActivity : AppCompatActivity() {
             } else if (action == KeyEvent.ACTION_UP) {
                 handler.removeCallbacks(centerLongPressRunnable)
                 if (isCenterLongPressTriggered) {
+                    isCenterLongPressTriggered = false
                     return true
                 }
             }
         }
 
-        // 3. 一般情況下的按鍵分發
-        if (action == KeyEvent.ACTION_DOWN) {
-            when (keyCode) {
-                // 遙控器選單鍵：單擊切換虛擬滑鼠模式
-                KeyEvent.KEYCODE_MENU -> {
-                    val isCursor = cursorContainer.toggleCursorMode()
+        // 4. 返回鍵邏輯
+        if (keyCode == KeyEvent.KEYCODE_BACK) {
+            if (action == KeyEvent.ACTION_DOWN) {
+                val now = System.currentTimeMillis()
+                if (now - lastBackPressTime < DOUBLE_CLICK_INTERVAL) {
+                    // 雙擊成功，切換虛擬滑鼠模式
+                    cursorContainer.toggleCursorMode()
+                    lastBackPressTime = 0L
+                    return true
+                }
+                lastBackPressTime = now
+
+                // 如果處於自訂全螢幕影片視圖中，退出全螢幕
+                if (customVideoView != null) {
+                    hideCustomVideoView()
                     return true
                 }
 
-                // 遙控器返回鍵：雙擊切換虛擬滑鼠，單擊後退或退出
-                KeyEvent.KEYCODE_BACK -> {
-                    val now = System.currentTimeMillis()
-                    if (now - lastBackPressTime < DOUBLE_CLICK_INTERVAL) {
-                        // 雙擊成功，切換虛擬滑鼠模式
-                        cursorContainer.toggleCursorMode()
-                        lastBackPressTime = 0L
-                        return true
-                    }
-                    lastBackPressTime = now
-
-                    // 如果處於自訂全螢幕影片視圖中，退出全螢幕
-                    if (customVideoView != null) {
-                        hideCustomVideoView()
-                        return true
-                    }
-
-                    // 如果處於虛擬滑鼠模式，單擊先退出虛擬滑鼠
-                    if (cursorContainer.isCursorMode()) {
-                        cursorContainer.setCursorMode(false)
-                        return true
-                    }
-
-                    // 如果 WebView 可後退，優先在網頁內後退
-                    if (webView.canGoBack()) {
-                        webView.goBack()
-                        return true
-                    }
-
-                    // 連續單擊兩次退出 App
-                    if (now - exitToastTime < EXIT_INTERVAL) {
-                        finish()
-                    } else {
-                        exitToastTime = now
-                        Toast.makeText(this, getString(R.string.msg_press_again_exit), Toast.LENGTH_SHORT).show()
-                    }
+                // 如果處於虛擬滑鼠模式，單擊優先關閉虛擬滑鼠
+                if (cursorContainer.isCursorMode()) {
+                    cursorContainer.setCursorMode(false)
                     return true
                 }
 
-                // 非游標模式下的【播放快捷模式】
-                KeyEvent.KEYCODE_DPAD_UP -> {
-                    if (!cursorContainer.isCursorMode()) {
-                        // 向上滾動或滑動切換上一集
-                        webView.evaluateJavascript("window.__hg_scrollBy ? window.__hg_scrollBy(-0.8) : window.scrollBy({top: -window.innerHeight * 0.8, behavior: 'smooth'});", null)
-                        return true
-                    }
+                // 如果 WebView 可後退，優先在網頁內後退
+                if (webView.canGoBack()) {
+                    webView.goBack()
+                    return true
                 }
 
-                KeyEvent.KEYCODE_DPAD_DOWN -> {
-                    if (!cursorContainer.isCursorMode()) {
-                        // 向下滾動或滑動切換下一集
-                        webView.evaluateJavascript("window.__hg_scrollBy ? window.__hg_scrollBy(0.8) : window.scrollBy({top: window.innerHeight * 0.8, behavior: 'smooth'});", null)
-                        return true
-                    }
-                }
-
-                KeyEvent.KEYCODE_DPAD_LEFT -> {
-                    if (!cursorContainer.isCursorMode()) {
-                        // 快退 10 秒
-                        webView.evaluateJavascript("if (window.__hg_seek) { window.__hg_seek(-10); }", null)
-                        return true
-                    }
-                }
-
-                KeyEvent.KEYCODE_DPAD_RIGHT -> {
-                    if (!cursorContainer.isCursorMode()) {
-                        // 快進 10 秒
-                        webView.evaluateJavascript("if (window.__hg_seek) { window.__hg_seek(10); }", null)
-                        return true
-                    }
-                }
-
-                KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> {
-                    if (!cursorContainer.isCursorMode() && !isCenterLongPressTriggered) {
-                        // 自動尋找 video 標籤切換 play() / pause()
-                        webView.evaluateJavascript("if (window.__hg_togglePlay) { window.__hg_togglePlay(); }", null)
-                        return true
-                    }
+                // 連續單擊兩次退出 App
+                if (now - exitToastTime < EXIT_INTERVAL) {
+                    finish()
+                } else {
+                    exitToastTime = now
+                    Toast.makeText(this, getString(R.string.msg_press_again_exit), Toast.LENGTH_SHORT).show()
                 }
             }
+            return true
+        }
+
+        // 5. 非虛擬滑鼠模式下的 D-Pad 鍵盤導航：
+        // 優先讓事件直接派發給 WebView，使網頁內按鈕能獲取焦點並顯示高亮外框；
+        // 若 WebView 未消費或聚焦在 video，由 webView 內部注入的 keydown 處理滾動或快退快進
+        if (webView.dispatchKeyEvent(event)) {
+            return true
         }
 
         return super.dispatchKeyEvent(event)
@@ -486,7 +466,7 @@ class MainActivity : AppCompatActivity() {
             webView.reload()
         }
 
-        // 6. 檢查版本更新
+        // 6. 檢查版本更新（此處為手動檢查）
         btnCheckUpdate.setOnClickListener {
             dialog.dismiss()
             updateManager.checkForUpdates(isManual = true)
@@ -542,6 +522,7 @@ class MainActivity : AppCompatActivity() {
     override fun onResume() {
         super.onResume()
         webView.onResume()
+        webView.requestFocus()
     }
 
     override fun onPause() {
