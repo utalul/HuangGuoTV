@@ -3,7 +3,9 @@ package com.huangguo.tv
 import android.annotation.SuppressLint
 import android.app.Dialog
 import android.graphics.Bitmap
+import android.graphics.Color
 import android.net.Uri
+import android.net.http.SslError
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -14,8 +16,12 @@ import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
+import android.webkit.ConsoleMessage
+import android.webkit.SslErrorHandler
 import android.webkit.WebChromeClient
+import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -102,9 +108,9 @@ class MainActivity : AppCompatActivity() {
 
     @SuppressLint("SetJavaScriptEnabled")
     private fun setupWebView() {
-        // 啟用硬體加速並設定純黑底色
+        // 確保硬體加速維持開啟，並設為透明底色（避免在內容載入前強制純黑遮蔽渲染）
         webView.setLayerType(View.LAYER_TYPE_HARDWARE, null)
-        webView.setBackgroundColor(0xFF000000.toInt())
+        webView.setBackgroundColor(Color.TRANSPARENT)
 
         // 確保電視端焦點能進入 WebView
         webView.isFocusable = true
@@ -119,6 +125,7 @@ class MainActivity : AppCompatActivity() {
         settings.loadWithOverviewMode = true
         settings.allowFileAccess = true
         settings.allowContentAccess = true
+        settings.javaScriptCanOpenWindowsAutomatically = true
         settings.setSupportZoom(false)
         settings.builtInZoomControls = false
         settings.displayZoomControls = false
@@ -152,19 +159,77 @@ class MainActivity : AppCompatActivity() {
             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                 super.onPageStarted(view, url, favicon)
                 loadingBar.visibility = View.VISIBLE
+                Log.d(TAG, "開始載入頁面: $url")
             }
 
             override fun onPageFinished(view: WebView?, url: String?) {
                 super.onPageFinished(view, url)
                 loadingBar.visibility = View.GONE
+                Log.i(TAG, "頁面載入完成: $url")
 
                 // 頁面載入完成後重新確保焦點聚焦於 WebView
                 webView.isFocusable = true
                 webView.isFocusableInTouchMode = true
                 webView.requestFocus()
 
-                // 自動注入自訂 CSS/JS、成年驗證自動穿透與可焦點化處理
+                // 注入安全修正後的 CSS/JS、精準年齡確認點擊與公告關閉邏輯
                 injectCustomStylesAndScripts()
+            }
+
+            @SuppressLint("WebViewClientOnReceivedSslError")
+            override fun onReceivedSslError(
+                view: WebView?,
+                handler: SslErrorHandler?,
+                error: SslError?
+            ) {
+                // 避免舊電視因系統根憑證過期或資源憑證異常導致整頁中斷黑屏
+                Log.w(
+                    TAG,
+                    "SSL 憑證異常已放行: url=${error?.url}, primaryError=${error?.primaryError}"
+                )
+                handler?.proceed()
+            }
+
+            override fun onReceivedError(
+                view: WebView?,
+                request: WebResourceRequest?,
+                error: WebResourceError?
+            ) {
+                super.onReceivedError(view, request, error)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    Log.e(
+                        TAG,
+                        "WebView 資源載入錯誤: url=${request?.url}, isMainFrame=${request?.isForMainFrame}, errorCode=${error?.errorCode}, description=${error?.description}"
+                    )
+                }
+            }
+
+            @Suppress("DEPRECATION")
+            override fun onReceivedError(
+                view: WebView?,
+                errorCode: Int,
+                description: String?,
+                failingUrl: String?
+            ) {
+                super.onReceivedError(view, errorCode, description, failingUrl)
+                Log.e(
+                    TAG,
+                    "WebView 載入錯誤 (Legacy): url=$failingUrl, errorCode=$errorCode, description=$description"
+                )
+            }
+
+            override fun onReceivedHttpError(
+                view: WebView?,
+                request: WebResourceRequest?,
+                errorResponse: WebResourceResponse?
+            ) {
+                super.onReceivedHttpError(view, request, errorResponse)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    Log.e(
+                        TAG,
+                        "WebView HTTP 錯誤: url=${request?.url}, isMainFrame=${request?.isForMainFrame}, statusCode=${errorResponse?.statusCode}, reason=${errorResponse?.reasonPhrase}"
+                    )
+                }
             }
         }
 
@@ -177,6 +242,18 @@ class MainActivity : AppCompatActivity() {
                 } else {
                     loadingBar.visibility = View.GONE
                 }
+            }
+
+            override fun onConsoleMessage(consoleMessage: ConsoleMessage?): Boolean {
+                consoleMessage?.let { msg ->
+                    val logText = "[WebConsole][${msg.sourceId()}:${msg.lineNumber()}] ${msg.message()}"
+                    when (msg.messageLevel()) {
+                        ConsoleMessage.MessageLevel.ERROR -> Log.e(TAG, logText)
+                        ConsoleMessage.MessageLevel.WARNING -> Log.w(TAG, logText)
+                        else -> Log.d(TAG, logText)
+                    }
+                }
+                return super.onConsoleMessage(consoleMessage)
             }
 
             override fun onShowCustomView(view: View?, callback: CustomViewCallback?) {
@@ -245,40 +322,247 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * 注入自訂 CSS 與 JS 腳本
-     * 包含：
-     * 1. 背景純黑、直立播放器置中、隱藏「下載 App」浮動橫幅
-     * 2. 自動穿透「年滿 18 歲」年齡確認彈窗並寫入 localStorage
-     * 3. 網頁可點擊元素支援 :focus 鮮紅高亮框與 tabindex 自動補全
+     * 注入安全修正後的 CSS 與 JS 腳本
+     * 1. 移除過激全域隱藏語法，不強制覆蓋 body/app 結構與全域 van-overlay
+     * 2. 針對「年滿18 / 進入網站」與「公告關閉」精準點擊確認按鈕，殘留時僅移除彈窗本身
+     * 3. 保留電視遙控器焦點外框與影片播放控制輔助函數
      */
     private fun injectCustomStylesAndScripts() {
-        val config = configManager.getConfig()
+        // 1. 注入安全 CSS（使用 Base64 編碼避免字元跳脫問題）
+        val safeCss = """
+            video {
+                display: block !important;
+                margin: 0 auto !important;
+                max-height: 100vh !important;
+                object-fit: contain !important;
+            }
+            ::-webkit-scrollbar {
+                display: none !important;
+                width: 0px !important;
+            }
+            .open-app-banner, .footer-app, .app-download-bar, a[href*='.apk'] {
+                display: none !important;
+            }
+            :focus, :focus-visible, a:focus, button:focus, [tabindex]:focus, [role='button']:focus, .van-button:focus {
+                outline: 3.5px solid #FF1744 !important;
+                outline-offset: 2px !important;
+                box-shadow: 0 0 16px #FF1744 !important;
+            }
+        """.trimIndent()
 
-        // 1. 注入 CSS (使用 Base64 編碼避免字元跳脫問題)
-        val css = config.injectCss
-        if (css.isNotEmpty()) {
-            val encodedCss = Base64.encodeToString(css.toByteArray(), Base64.NO_WRAP)
-            val cssJs = """
-                (function() {
-                    var styleId = '__hg_injected_style';
-                    var styleEl = document.getElementById(styleId);
-                    if (!styleEl) {
-                        styleEl = document.createElement('style');
-                        styleEl.id = styleId;
-                        styleEl.type = 'text/css';
-                        document.head.appendChild(styleEl);
+        val encodedCss = Base64.encodeToString(safeCss.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
+        val cssJs = """
+            (function() {
+                var head = document.head || document.documentElement;
+                if (!head) return;
+                var styleId = '__hg_injected_style';
+                var styleEl = document.getElementById(styleId);
+                if (!styleEl) {
+                    styleEl = document.createElement('style');
+                    styleEl.id = styleId;
+                    styleEl.type = 'text/css';
+                    head.appendChild(styleEl);
+                }
+                styleEl.textContent = window.atob('$encodedCss');
+            })();
+        """.trimIndent()
+        webView.evaluateJavascript(cssJs, null)
+
+        // 2. 注入精準定向年齡確認、公告關閉與 TV 輔助 JS
+        val safeJs = """
+            (function() {
+                try {
+                    var keys = ['isAdult', 'adult', 'is_adult', 'age_verify', 'has_confirmed_age', 'age_confirmed'];
+                    keys.forEach(function(k) {
+                        localStorage.setItem(k, 'true');
+                        sessionStorage.setItem(k, 'true');
+                    });
+                } catch (e) {}
+
+                var ageKeywords = ['年滿18', '年满18', '進入網站', '进入网站'];
+                var noticeKeywords = ['我知道了', '關閉公告', '关闭公告', '關閉', '关闭'];
+
+                function matchesSelector(el, selector) {
+                    if (!el || el.nodeType !== 1) return false;
+                    var fn = el.matches || el.webkitMatchesSelector;
+                    return fn ? fn.call(el, selector) : false;
+                }
+
+                function findClosest(el, selector) {
+                    if (!el) return null;
+                    if (el.closest) return el.closest(selector);
+                    var cur = el;
+                    while (cur && cur.nodeType === 1) {
+                        if (matchesSelector(cur, selector)) return cur;
+                        cur = cur.parentElement;
                     }
-                    styleEl.innerHTML = window.atob('$encodedCss');
-                })();
-            """.trimIndent()
-            webView.evaluateJavascript(cssJs, null)
-        }
+                    return null;
+                }
 
-        // 2. 注入 JS 輔助函數與穿透腳本
-        val js = config.injectJs
-        if (js.isNotEmpty()) {
-            webView.evaluateJavascript(js, null)
-        }
+                function isProtectedRoot(el) {
+                    if (!el || !el.tagName) return true;
+                    var tag = el.tagName.toUpperCase();
+                    if (tag === 'HTML' || tag === 'BODY' || tag === 'MAIN') return true;
+                    if (el.id === 'app' || el.id === 'root') return true;
+                    return false;
+                }
+
+                function isVisible(el) {
+                    if (!el) return false;
+                    var style = window.getComputedStyle(el);
+                    return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
+                }
+
+                function clickElement(el) {
+                    try {
+                        el.click();
+                        el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+                    } catch (e) {}
+                }
+
+                function removeResidualPopup(popupEl) {
+                    if (!popupEl || isProtectedRoot(popupEl)) return;
+                    if (popupEl.querySelector('#app, #root, main')) return;
+                    if (isVisible(popupEl)) {
+                        popupEl.remove();
+                    }
+                    // 僅當畫面上已無可見的 van-dialog / van-popup 時，才精準移除殘留的遮罩層元素本身
+                    var remainingPopups = document.querySelectorAll('.van-dialog, .van-popup, [role="dialog"]');
+                    var hasVisiblePopup = false;
+                    for (var i = 0; i < remainingPopups.length; i++) {
+                        if (!isProtectedRoot(remainingPopups[i]) && isVisible(remainingPopups[i])) {
+                            hasVisiblePopup = true;
+                            break;
+                        }
+                    }
+                    if (!hasVisiblePopup) {
+                        var overlays = document.querySelectorAll('body > .van-overlay, body > .modal-mask');
+                        for (var j = 0; j < overlays.length; j++) {
+                            if (!isProtectedRoot(overlays[j]) && !overlays[j].querySelector('#app, #root')) {
+                                overlays[j].remove();
+                            }
+                        }
+                    }
+                }
+
+                function handleConfirmAndNotice() {
+                    var acted = false;
+                    var candidates = document.querySelectorAll(
+                        'button, a, [role="button"], .van-button, .van-dialog__confirm, .van-popup__close-icon, [class*="close-btn"], [class*="close-icon"], span, div'
+                    );
+
+                    for (var i = 0; i < candidates.length; i++) {
+                        var el = candidates[i];
+                        if (isProtectedRoot(el) || !isVisible(el)) continue;
+
+                        var tag = el.tagName.toUpperCase();
+                        // div / span 僅比對葉節點，避免誤中整個頁面父容器
+                        if ((tag === 'DIV' || tag === 'SPAN') && el.children.length > 1) continue;
+
+                        var isIconClose = matchesSelector(el, '.van-popup__close-icon, [class*="close-btn"], [class*="close-icon"]');
+                        var txt = (el.innerText || el.textContent || '').trim();
+                        if (!isIconClose && (!txt || txt.length > 24)) continue;
+
+                        var matchedAge = false;
+                        for (var a = 0; a < ageKeywords.length; a++) {
+                            if (txt.indexOf(ageKeywords[a]) !== -1) {
+                                matchedAge = true;
+                                break;
+                            }
+                        }
+
+                        var popupBox = findClosest(el, '.van-dialog, .van-popup, [role="dialog"], .age-modal, .notice-modal');
+                        var matchedNotice = false;
+                        if (popupBox && !isProtectedRoot(popupBox)) {
+                            if (isIconClose) {
+                                matchedNotice = true;
+                            } else {
+                                for (var n = 0; n < noticeKeywords.length; n++) {
+                                    if (txt.indexOf(noticeKeywords[n]) !== -1) {
+                                        matchedNotice = true;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+
+                        if (matchedAge || matchedNotice) {
+                            clickElement(el);
+                            acted = true;
+                            if (popupBox) {
+                                (function(targetPopup) {
+                                    setTimeout(function() {
+                                        removeResidualPopup(targetPopup);
+                                    }, 350);
+                                })(popupBox);
+                            }
+                        }
+                    }
+                    return acted;
+                }
+
+                handleConfirmAndNotice();
+                var attempts = 0;
+                var timer = setInterval(function() {
+                    attempts++;
+                    handleConfirmAndNotice();
+                    if (attempts >= 15) clearInterval(timer);
+                }, 400);
+
+                if (window.MutationObserver && !window.__hg_popup_observer) {
+                    var obsTarget = document.body || document.documentElement;
+                    if (obsTarget) {
+                        window.__hg_popup_observer = new MutationObserver(function() {
+                            handleConfirmAndNotice();
+                        });
+                        window.__hg_popup_observer.observe(obsTarget, { childList: true, subtree: true });
+                    }
+                }
+
+                function makeFocusable() {
+                    var els = document.querySelectorAll('a, button, [role="button"], .van-button, .van-tab');
+                    for (var i = 0; i < els.length; i++) {
+                        if (!els[i].hasAttribute('tabindex')) {
+                            els[i].setAttribute('tabindex', '0');
+                        }
+                    }
+                }
+                makeFocusable();
+
+                window.__hg_findVideo = function() {
+                    var videos = document.getElementsByTagName('video');
+                    if (videos && videos.length > 0) {
+                        for (var i = 0; i < videos.length; i++) {
+                            if (videos[i].readyState > 0 || !videos[i].paused || videos[i].currentTime > 0) {
+                                return videos[i];
+                            }
+                        }
+                        return videos[0];
+                    }
+                    return null;
+                };
+                window.__hg_togglePlay = function() {
+                    var v = window.__hg_findVideo();
+                    if (v) {
+                        if (v.paused) v.play(); else v.pause();
+                        return !v.paused;
+                    }
+                    return false;
+                };
+                window.__hg_seek = function(deltaSeconds) {
+                    var v = window.__hg_findVideo();
+                    if (v && v.duration) {
+                        v.currentTime = Math.max(0, Math.min(v.duration, v.currentTime + deltaSeconds));
+                    }
+                };
+                window.__hg_scrollBy = function(ratio) {
+                    window.scrollBy({ top: window.innerHeight * ratio, behavior: 'smooth' });
+                };
+
+                console.log('HuangGuoTV Safe Helper JS injected, url=' + location.href + ', bodyChildren=' + (document.body ? document.body.children.length : -1));
+            })();
+        """.trimIndent()
+        webView.evaluateJavascript(safeJs, null)
     }
 
     /**
