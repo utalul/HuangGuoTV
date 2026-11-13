@@ -1,0 +1,193 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/black"
+    android:keepScreenOn="true">
+
+    <!-- 滿版原生 ExoPlayer 視圖 -->
+    <androidx.media3.ui.PlayerView
+        android:id="@+id/playerView"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@color/black"
+        app:resize_mode="fit"
+        app:surface_type="surface_view"
+        app:use_controller="false" />
+
+    <!-- 頂部與底部原生播放控制列 (自動隱藏 HUD) -->
+    <RelativeLayout
+        android:id="@+id/layoutController"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="#66000000"
+        android:visibility="gone">
+
+        <!-- 頂部劇名列 -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_alignParentTop="true"
+            android:background="#B3000000"
+            android:orientation="vertical"
+            android:paddingStart="36dp"
+            android:paddingTop="20dp"
+            android:paddingEnd="36dp"
+            android:paddingBottom="16dp">
+
+            <TextView
+                android:id="@+id/tvPlayerTitle"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:textColor="@color/white"
+                android:textSize="22sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/tvPlayerEpisode"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:textColor="@color/brand_yellow"
+                android:textSize="15sp" />
+        </LinearLayout>
+
+        <!-- 底部進度與快捷提示列 -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_alignParentBottom="true"
+            android:background="#D9000000"
+            android:orientation="vertical"
+            android:paddingStart="36dp"
+            android:paddingTop="14dp"
+            android:paddingEnd="36dp"
+            android:paddingBottom="20dp">
+
+            <!-- 時間與進度條 -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:id="@+id/tvCurrentTime"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="00:00"
+                    android:textColor="@color/white"
+                    android:textSize="14sp" />
+
+                <ProgressBar
+                    android:id="@+id/playerProgressBar"
+                    style="?android:attr/progressBarStyleHorizontal"
+                    android:layout_width="0dp"
+                    android:layout_height="12dp"
+                    android:layout_marginStart="14dp"
+                    android:layout_marginEnd="14dp"
+                    android:layout_weight="1"
+                    android:progressDrawable="@drawable/progress_bar_horizontal" />
+
+                <TextView
+                    android:id="@+id/tvTotalTime"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="00:00"
+                    android:textColor="#B0B0B0"
+                    android:textSize="14sp" />
+            </LinearLayout>
+
+            <!-- TV 遙控器提示 -->
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="10dp"
+                android:text="【確認鍵】暫停/播放   【左 / 右】快退/快進 10秒   【上 / 下】切換集數   【選單鍵】快速跳集"
+                android:textColor="#E0E0E0"
+                android:textSize="13sp" />
+        </LinearLayout>
+    </RelativeLayout>
+
+    <!-- 串流嗅探與緩衝載入中遮罩 -->
+    <LinearLayout
+        android:id="@+id/layoutPlayerLoading"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:background="@drawable/dialog_bg"
+        android:gravity="center"
+        android:orientation="vertical"
+        android:padding="28dp">
+
+        <ProgressBar
+            android:layout_width="52dp"
+            android:layout_height="52dp"
+            android:indeterminateTint="@color/brand_yellow" />
+
+        <TextView
+            android:id="@+id/tvPlayerLoadingStatus"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="正在由無頭引擎嗅探影片真實串流..."
+            android:textColor="@color/white"
+            android:textSize="16sp" />
+    </LinearLayout>
+
+    <!-- 半透明浮層：選集網格列表 -->
+    <RelativeLayout
+        android:id="@+id/layoutEpisodeSheet"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="#E60A0A0A"
+        android:padding="32dp"
+        android:visibility="gone">
+
+        <TextView
+            android:id="@+id/tvSheetTitle"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="選擇集數"
+            android:textColor="@color/brand_yellow"
+            android:textSize="22sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_alignParentEnd="true"
+            android:text="按 [返回鍵] 關閉選集"
+            android:textColor="#9E9E9E"
+            android:textSize="14sp" />
+
+        <androidx.recyclerview.widget.RecyclerView
+            android:id="@+id/rvEpisodeGrid"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:layout_below="@id/tvSheetTitle"
+            android:layout_marginTop="18dp"
+            android:clipChildren="false"
+            android:clipToPadding="false"
+            android:focusable="true"
+            android:focusableInTouchMode="true" />
+    </RelativeLayout>
+
+    <!-- 操作提示 HUD (快進快退/換集提示) -->
+    <TextView
+        android:id="@+id/tvPlayerHint"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top|center_horizontal"
+        android:layout_marginTop="36dp"
+        android:background="@drawable/dialog_bg"
+        android:paddingStart="24dp"
+        android:paddingTop="12dp"
+        android:paddingEnd="24dp"
+        android:paddingBottom="12dp"
+        android:textColor="@color/white"
+        android:textSize="16sp"
+        android:visibility="gone" />
+
+</FrameLayout>

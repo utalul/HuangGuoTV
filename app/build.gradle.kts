@@ -62,10 +62,22 @@ android {
 }
 
 dependencies {
-    // 極致輕量原生依賴，不使用任何龐大第三方 UI 框架
+    // 極致輕量原生依賴
     implementation("androidx.core:core-ktx:1.12.0")
     implementation("androidx.appcompat:appcompat:1.6.1")
     implementation("androidx.annotation:annotation:1.7.1")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.6.2")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
+
+    // AndroidX Media3 (ExoPlayer) 支援原生滿版播放與 HLS (.m3u8)
+    implementation("androidx.media3:media3-exoplayer:1.2.1")
+    implementation("androidx.media3:media3-exoplayer-hls:1.2.1")
+    implementation("androidx.media3:media3-ui:1.2.1")
+
+    // 圖片載入庫 (Coil 輕量非同步圖片載入與快取)
+    implementation("io.coil-kt:coil:2.5.0")
+
+    // 原生 Android TV 列表與卡片 UI
+    implementation("androidx.recyclerview:recyclerview:1.3.2")
+    implementation("androidx.cardview:cardview:1.0.0")
 }

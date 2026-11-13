@@ -52,6 +52,14 @@
             </intent-filter>
         </activity>
 
+        <!-- 原生全螢幕 ExoPlayer 播放器 -->
+        <activity
+            android:name=".PlayerActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|keyboard"
+            android:exported="false"
+            android:hardwareAccelerated="true"
+            android:screenOrientation="landscape" />
+
         <!-- OTA 安裝專用 FileProvider -->
         <provider
             android:name="androidx.core.content.FileProvider"

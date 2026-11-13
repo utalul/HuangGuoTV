@@ -1,53 +1,158 @@
 <?xml version="1.0" encoding="utf-8"?>
-<com.huangguo.tv.view.CursorLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    android:id="@+id/cursorContainer"
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="@color/black"
-    android:keepScreenOn="true">
+    android:orientation="vertical"
+    android:clipChildren="false"
+    android:clipToPadding="false"
+    android:keepScreenOn="true"
+    android:paddingStart="28dp"
+    android:paddingTop="18dp"
+    android:paddingEnd="28dp"
+    android:paddingBottom="12dp">
 
-    <!-- 核心 H5 播放視圖 -->
-    <WebView
-        android:id="@+id/webView"
+    <!-- 頂部導覽列 -->
+    <RelativeLayout
         android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        android:background="@color/black"
-        android:focusable="true"
-        android:focusableInTouchMode="true" />
-
-    <!-- 網頁載入頂部微型進度條 -->
-    <ProgressBar
-        android:id="@+id/loadingBar"
-        style="?android:attr/progressBarStyleHorizontal"
-        android:layout_width="match_parent"
-        android:layout_height="3dp"
-        android:layout_gravity="top"
-        android:progressDrawable="@drawable/progress_bar_horizontal"
-        android:visibility="gone" />
-
-    <!-- 虛擬滑鼠游標視圖 (由 CursorLayout 控制座標與顯示) -->
-    <ImageView
-        android:id="@+id/cursorView"
-        android:layout_width="36dp"
-        android:layout_height="36dp"
-        android:contentDescription="Virtual Mouse Cursor"
-        android:src="@drawable/cursor_pointer"
-        android:visibility="gone" />
-
-    <!-- 操作提示 HUD (短暫顯示模式切換) -->
-    <TextView
-        android:id="@+id/tvModeHint"
-        android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:layout_gravity="top|center_horizontal"
-        android:layout_marginTop="24dp"
-        android:background="@drawable/dialog_bg"
-        android:paddingStart="20dp"
-        android:paddingTop="10dp"
-        android:paddingEnd="20dp"
-        android:paddingBottom="10dp"
-        android:textColor="@color/white"
-        android:textSize="16sp"
-        android:visibility="gone" />
+        android:layout_marginBottom="14dp">
 
-</com.huangguo.tv.view.CursorLayout>
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_alignParentStart="true"
+            android:layout_centerVertical="true"
+            android:orientation="vertical">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="黃果短劇 TV"
+                android:textColor="@color/brand_yellow"
+                android:textSize="26sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/tvCurrentLine"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="2dp"
+                android:text="目前線路：連線中..."
+                android:textColor="#A0A0A0"
+                android:textSize="12sp" />
+        </LinearLayout>
+
+        <!-- 頂部快捷操作按鈕區 (支援遙控器焦點導航) -->
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_alignParentEnd="true"
+            android:layout_centerVertical="true"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/btnReload"
+                android:layout_width="wrap_content"
+                android:layout_height="38dp"
+                android:background="@drawable/btn_selector"
+                android:focusable="true"
+                android:focusableInTouchMode="true"
+                android:paddingStart="14dp"
+                android:paddingEnd="14dp"
+                android:text="重新整理"
+                android:textColor="@color/white"
+                android:textSize="13sp" />
+
+            <Button
+                android:id="@+id/btnSwitchLine"
+                android:layout_width="wrap_content"
+                android:layout_height="38dp"
+                android:layout_marginStart="10dp"
+                android:background="@drawable/btn_selector"
+                android:focusable="true"
+                android:focusableInTouchMode="true"
+                android:paddingStart="14dp"
+                android:paddingEnd="14dp"
+                android:text="切換線路"
+                android:textColor="@color/white"
+                android:textSize="13sp" />
+
+            <Button
+                android:id="@+id/btnCheckUpdate"
+                android:layout_width="wrap_content"
+                android:layout_height="38dp"
+                android:layout_marginStart="10dp"
+                android:background="@drawable/btn_selector"
+                android:focusable="true"
+                android:focusableInTouchMode="true"
+                android:paddingStart="14dp"
+                android:paddingEnd="14dp"
+                android:text="檢查更新"
+                android:textColor="@color/white"
+                android:textSize="13sp" />
+        </LinearLayout>
+    </RelativeLayout>
+
+    <!-- 主內容區：海報牆網格與載入指示器 -->
+    <FrameLayout
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:clipChildren="false"
+        android:clipToPadding="false">
+
+        <!-- 5 欄短劇海報網格 -->
+        <androidx.recyclerview.widget.RecyclerView
+            android:id="@+id/rvDramaGrid"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:clipChildren="false"
+            android:clipToPadding="false"
+            android:descendantFocusability="afterDescendants"
+            android:focusable="true"
+            android:focusableInTouchMode="true"
+            android:paddingBottom="16dp" />
+
+        <!-- 載入中狀態 -->
+        <LinearLayout
+            android:id="@+id/layoutLoading"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center"
+            android:gravity="center"
+            android:orientation="vertical"
+            android:visibility="visible">
+
+            <ProgressBar
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:indeterminateTint="@color/brand_yellow" />
+
+            <TextView
+                android:id="@+id/tvLoadingMsg"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="14dp"
+                android:text="正在由無頭引擎為您抓取最新短劇清單..."
+                android:textColor="#C0C0C0"
+                android:textSize="15sp" />
+        </LinearLayout>
+
+        <!-- 模式切換或操作短提示 HUD -->
+        <TextView
+            android:id="@+id/tvModeHint"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="top|center_horizontal"
+            android:background="@drawable/dialog_bg"
+            android:paddingStart="20dp"
+            android:paddingTop="10dp"
+            android:paddingEnd="20dp"
+            android:paddingBottom="10dp"
+            android:textColor="@color/white"
+            android:textSize="15sp"
+            android:visibility="gone" />
+
+    </FrameLayout>
+</LinearLayout>
