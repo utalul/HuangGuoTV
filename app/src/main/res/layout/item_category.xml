@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="48dp"
+    android:layout_marginStart="8dp"
+    android:layout_marginTop="3dp"
+    android:layout_marginEnd="8dp"
+    android:layout_marginBottom="3dp"
+    android:background="@drawable/category_item_bg"
+    android:clickable="true"
+    android:focusable="true"
+    android:focusableInTouchMode="true"
+    android:gravity="center_vertical"
+    android:orientation="horizontal"
+    android:paddingStart="12dp"
+    android:paddingEnd="10dp">
+
+    <!-- 選中指示小圓點 -->
+    <View
+        android:id="@+id/viewIndicator"
+        android:layout_width="4dp"
+        android:layout_height="16dp"
+        android:layout_marginEnd="8dp"
+        android:background="@color/brand_yellow"
+        android:visibility="gone" />
+
+    <TextView
+        android:id="@+id/tvCategoryTitle"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_weight="1"
+        android:ellipsize="end"
+        android:maxLines="1"
+        android:textColor="@color/white"
+        android:textSize="14sp"
+        android:textStyle="bold" />
+
+    <TextView
+        android:id="@+id/tvCategoryCount"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:background="#22FFFFFF"
+        android:paddingStart="5dp"
+        android:paddingTop="1dp"
+        android:paddingEnd="5dp"
+        android:paddingBottom="1dp"
+        android:textColor="#A0A0A0"
+        android:textSize="10sp"
+        android:visibility="gone" />
+
+</LinearLayout>

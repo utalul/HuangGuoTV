@@ -1,5 +1,6 @@
 package com.huangguo.tv.adapter
 
+import android.util.Log
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -12,11 +13,18 @@ import com.huangguo.tv.model.DramaItem
 
 /**
  * 原生 Android TV 海報牆適配器
+ * 支援 Coil 防盜鏈 Header 注入 (Referer, User-Agent) 與詳細除錯日誌
  */
 class DramaAdapter(
     private var items: List<DramaItem> = emptyList(),
+    var currentBaseUrl: String = "",
+    var userAgent: String = "",
     private val onItemClick: (DramaItem) -> Unit
 ) : RecyclerView.Adapter<DramaAdapter.DramaViewHolder>() {
+
+    companion object {
+        private const val TAG = "DramaAdapter"
+    }
 
     fun updateData(newItems: List<DramaItem>) {
         this.items = newItems
@@ -30,7 +38,7 @@ class DramaAdapter(
 
     override fun onBindViewHolder(holder: DramaViewHolder, position: Int) {
         val item = items[position]
-        holder.bind(item, onItemClick)
+        holder.bind(item, currentBaseUrl, userAgent, onItemClick)
     }
 
     override fun getItemCount(): Int = items.size
@@ -55,7 +63,12 @@ class DramaAdapter(
             }
         }
 
-        fun bind(item: DramaItem, onClick: (DramaItem) -> Unit) {
+        fun bind(
+            item: DramaItem,
+            baseUrl: String,
+            ua: String,
+            onClick: (DramaItem) -> Unit
+        ) {
             tvTitle.text = item.title
 
             if (item.badge.isNotEmpty()) {
@@ -70,6 +83,23 @@ class DramaAdapter(
                     crossfade(true)
                     placeholder(R.drawable.dialog_bg)
                     error(R.drawable.dialog_bg)
+
+                    // 穿透防盜鏈
+                    if (baseUrl.isNotEmpty()) {
+                        addHeader("Referer", baseUrl)
+                    }
+                    if (ua.isNotEmpty()) {
+                        addHeader("User-Agent", ua)
+                    }
+
+                    listener(
+                        onSuccess = { _, _ ->
+                            Log.d(TAG, "封面載入成功: ${item.title}")
+                        },
+                        onError = { _, result ->
+                            Log.e("CoilError", "圖片載入失敗: ${item.coverUrl}, 原因: ${result.throwable.message}")
+                        }
+                    )
                 }
             } else {
                 ivCover.setImageResource(R.drawable.dialog_bg)
