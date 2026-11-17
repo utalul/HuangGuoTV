@@ -13,7 +13,7 @@
         android:layout_height="match_parent"
         android:background="@color/black"
         app:resize_mode="fit"
-        app:surface_type="surface_view"
+        app:surface_type="texture_view"
         app:use_controller="false" />
 
     <!-- 頂部與底部原生播放控制列 (自動隱藏 HUD) -->

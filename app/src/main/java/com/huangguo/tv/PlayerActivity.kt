@@ -18,6 +18,7 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.PlayerView
@@ -34,7 +35,7 @@ import kotlin.math.min
 /**
  * 原生全螢幕 Android TV 影音播放器
  * 基於 AndroidX Media3 (ExoPlayer)，支援 HLS (.m3u8) / MP4，
- * 並配備自動防盜鏈 Header 注入與完整電視遙控器快捷鍵。
+ * 並配置解碼器自動降級 (Decoder Fallback)、重試次數保護與防盜鏈 Header 注入。
  */
 class PlayerActivity : AppCompatActivity() {
 
@@ -43,6 +44,7 @@ class PlayerActivity : AppCompatActivity() {
         const val EXTRA_DRAMA = "extra_drama"
         private const val CONTROLLER_TIMEOUT = 5000L
         private const val SEEK_STEP_MS = 10000L // 10 秒快進/快退
+        private const val MAX_STREAM_RETRY = 2  // 防止播放失敗無限重試死循環
     }
 
     private lateinit var playerView: PlayerView
@@ -67,6 +69,7 @@ class PlayerActivity : AppCompatActivity() {
     private var currentDrama: DramaItem? = null
     private var episodeList: List<EpisodeItem> = emptyList()
     private var currentEpisodeIndex = 0
+    private var streamRetryCount = 0 // 重試計數器
 
     private val handler = Handler(Looper.getMainLooper())
 
@@ -94,6 +97,9 @@ class PlayerActivity : AppCompatActivity() {
                     playerProgressBar.progress = ((current * 1000) / duration).toInt()
                     tvCurrentTime.text = formatTime(current)
                     tvTotalTime.text = formatTime(duration)
+                } else {
+                    tvCurrentTime.text = formatTime(current)
+                    tvTotalTime.text = "--:--"
                 }
             }
             handler.postDelayed(this, 500L)
@@ -103,30 +109,36 @@ class PlayerActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // 保持全螢幕與常亮
-        window.setFlags(
-            WindowManager.LayoutParams.FLAG_FULLSCREEN,
-            WindowManager.LayoutParams.FLAG_FULLSCREEN
-        )
-        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        try {
+            // 保持全螢幕與常亮
+            window.setFlags(
+                WindowManager.LayoutParams.FLAG_FULLSCREEN,
+                WindowManager.LayoutParams.FLAG_FULLSCREEN
+            )
+            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
-        setContentView(R.layout.activity_player)
+            setContentView(R.layout.activity_player)
 
-        configManager = ConfigManager.getInstance(this)
-        webScraperBridge = WebScraperBridge(this)
+            configManager = ConfigManager.getInstance(this)
+            webScraperBridge = WebScraperBridge(this)
 
-        @Suppress("DEPRECATION")
-        currentDrama = intent.getSerializableExtra(EXTRA_DRAMA) as? DramaItem
-        if (currentDrama == null) {
-            Toast.makeText(this, "無法讀取短劇資料", Toast.LENGTH_SHORT).show()
+            @Suppress("DEPRECATION")
+            currentDrama = intent.getSerializableExtra(EXTRA_DRAMA) as? DramaItem
+            if (currentDrama == null) {
+                Toast.makeText(this, "無法讀取短劇資料", Toast.LENGTH_SHORT).show()
+                finish()
+                return
+            }
+
+            initViews()
+            initExoPlayer()
+            setupEpisodeRecyclerView()
+            startLoadingDrama()
+        } catch (t: Throwable) {
+            Log.e(TAG, "PlayerActivity 啟動異常: ${t.message}", t)
+            Toast.makeText(this, "播放器啟動失敗: ${t.message}", Toast.LENGTH_LONG).show()
             finish()
-            return
         }
-
-        initViews()
-        initExoPlayer()
-        setupEpisodeRecyclerView()
-        startLoadingDrama()
     }
 
     private fun initViews() {
@@ -150,7 +162,7 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     /**
-     * 初始化 ExoPlayer 並配置自訂防盜鏈 HTTP Header
+     * 初始化 ExoPlayer：開啟解碼器自動降級 (Decoder Fallback) 並配置自訂防盜鏈 HTTP Header
      */
     private fun initExoPlayer() {
         val userAgent = configManager.getEffectiveUserAgent()
@@ -167,7 +179,12 @@ class PlayerActivity : AppCompatActivity() {
         val mediaSourceFactory = DefaultMediaSourceFactory(this)
             .setDataSourceFactory(httpDataSourceFactory)
 
-        exoPlayer = ExoPlayer.Builder(this)
+        // 開啟解碼器自動降級 (Decoder Fallback)，提升 32 位元電視晶片特殊編碼相容性
+        val renderersFactory = DefaultRenderersFactory(this).apply {
+            setEnableDecoderFallback(true)
+        }
+
+        exoPlayer = ExoPlayer.Builder(this, renderersFactory)
             .setMediaSourceFactory(mediaSourceFactory)
             .build()
             .apply {
@@ -175,15 +192,19 @@ class PlayerActivity : AppCompatActivity() {
                     override fun onPlaybackStateChanged(playbackState: Int) {
                         when (playbackState) {
                             Player.STATE_READY -> {
+                                streamRetryCount = 0 // 播放就緒時歸零重試計數
                                 layoutPlayerLoading.visibility = View.GONE
-                                tvTotalTime.text = formatTime(duration)
+                                if (duration > 0) {
+                                    tvTotalTime.text = formatTime(duration)
+                                } else {
+                                    tvTotalTime.text = "--:--"
+                                }
                             }
                             Player.STATE_BUFFERING -> {
                                 layoutPlayerLoading.visibility = View.VISIBLE
                                 tvPlayerLoadingStatus.text = "影片緩衝中..."
                             }
                             Player.STATE_ENDED -> {
-                                // 當前集數播放完畢，自動播放下一集
                                 showHint("即將為您自動播放下一集")
                                 playNextEpisode()
                             }
@@ -193,9 +214,16 @@ class PlayerActivity : AppCompatActivity() {
 
                     override fun onPlayerError(error: PlaybackException) {
                         Log.e(TAG, "ExoPlayer 播放錯誤: ${error.message}, code=${error.errorCodeName}")
-                        layoutPlayerLoading.visibility = View.VISIBLE
-                        tvPlayerLoadingStatus.text = "播放失敗，正在重新嗅探備援串流..."
-                        retryCurrentEpisode()
+                        if (streamRetryCount < MAX_STREAM_RETRY) {
+                            streamRetryCount++
+                            layoutPlayerLoading.visibility = View.VISIBLE
+                            tvPlayerLoadingStatus.text = "播放失敗，正在重新嗅探備援串流 ($streamRetryCount/$MAX_STREAM_RETRY)..."
+                            retryCurrentEpisode()
+                        } else {
+                            // 超過重試上限停止，給出明確引導
+                            layoutPlayerLoading.visibility = View.VISIBLE
+                            tvPlayerLoadingStatus.text = "播放失敗 (${error.errorCodeName})，已達重試上限，請按返回鍵切換線路或集數"
+                        }
                     }
                 })
             }
@@ -230,7 +258,16 @@ class PlayerActivity : AppCompatActivity() {
                 }
             },
             onStreamFound = { streamUrl ->
-                playStream(streamUrl)
+                if (streamUrl.isNotEmpty()) {
+                    playStream(streamUrl)
+                } else {
+                    layoutPlayerLoading.visibility = View.VISIBLE
+                    tvPlayerLoadingStatus.text = if (!webScraperBridge.isWebViewSupported) {
+                        "系統缺少 Android System WebView 元件，無法嗅探影片"
+                    } else {
+                        "嗅探串流超時，請按返回鍵重試或切換線路"
+                    }
+                }
             }
         )
     }
@@ -259,6 +296,7 @@ class PlayerActivity : AppCompatActivity() {
     private fun playEpisode(index: Int) {
         if (index < 0 || index >= episodeList.size) return
         currentEpisodeIndex = index
+        streamRetryCount = 0 // 切換集數時重置重試計數
         val targetEpisode = episodeList[index]
         tvPlayerEpisode.text = targetEpisode.title
         (rvEpisodeGrid.adapter as? EpisodeAdapter)?.setCurrentPlayingIndex(index)
@@ -268,7 +306,12 @@ class PlayerActivity : AppCompatActivity() {
         tvPlayerLoadingStatus.text = "正在切換至【${targetEpisode.title}】..."
 
         webScraperBridge.sniffEpisodeStream(targetEpisode.url) { streamUrl ->
-            playStream(streamUrl)
+            if (streamUrl.isNotEmpty()) {
+                playStream(streamUrl)
+            } else {
+                layoutPlayerLoading.visibility = View.VISIBLE
+                tvPlayerLoadingStatus.text = "嗅探此集串流超時，請按返回鍵嘗試其他集數"
+            }
         }
     }
 
@@ -296,7 +339,15 @@ class PlayerActivity : AppCompatActivity() {
 
     private fun retryCurrentEpisode() {
         if (episodeList.isNotEmpty() && currentEpisodeIndex < episodeList.size) {
-            playEpisode(currentEpisodeIndex)
+            val targetEpisode = episodeList[currentEpisodeIndex]
+            webScraperBridge.sniffEpisodeStream(targetEpisode.url) { streamUrl ->
+                if (streamUrl.isNotEmpty()) {
+                    playStream(streamUrl)
+                } else {
+                    layoutPlayerLoading.visibility = View.VISIBLE
+                    tvPlayerLoadingStatus.text = "重試嗅探超時，請按返回鍵更換播放線路"
+                }
+            }
         } else {
             startLoadingDrama()
         }
@@ -416,10 +467,15 @@ class PlayerActivity : AppCompatActivity() {
                     return true
                 }
 
-                // 快進 10 秒
+                // 快進 10 秒 (修正 C.TIME_UNSET / duration <= 0 負數快進異常)
                 KeyEvent.KEYCODE_DPAD_RIGHT -> {
                     val player = exoPlayer ?: return true
-                    val target = min(player.duration, player.currentPosition + SEEK_STEP_MS)
+                    val duration = player.duration
+                    val target = if (duration > 0) {
+                        min(duration, player.currentPosition + SEEK_STEP_MS)
+                    } else {
+                        player.currentPosition + SEEK_STEP_MS
+                    }
                     player.seekTo(target)
                     showHint("快進 +10 秒 (${formatTime(target)})")
                     showControllerTemporarily()

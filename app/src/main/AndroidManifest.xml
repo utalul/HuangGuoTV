@@ -30,6 +30,7 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.HuangGuoTV"
         android:usesCleartextTraffic="true"
+        android:largeHeap="true"
         tools:targetApi="33">
 
         <activity

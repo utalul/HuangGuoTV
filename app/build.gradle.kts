@@ -23,7 +23,6 @@ android {
 
     signingConfigs {
         create("release") {
-            // 使用預設 debug 憑證或相同簽名，確保產出的 Release APK 能在 Android TV 直接安裝
             storeFile = file("${System.getProperty("user.home")}/.android/debug.keystore")
             storePassword = "android"
             keyAlias = "androiddebugkey"
@@ -38,12 +37,8 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            // 如果存在 debug keystore 則套用簽名，否則降級以防 build 失敗
-            signingConfig = if (file("${System.getProperty("user.home")}/.android/debug.keystore").exists()) {
-                signingConfigs.getByName("release")
-            } else {
-                signingConfigs.getByName("debug")
-            }
+            // 直接指定 debug 簽名，確保 CI/CD 與無自訂金鑰環境均能穩定產生可安裝 APK
+            signingConfig = signingConfigs.getByName("debug")
         }
         debug {
             applicationIdSuffix = ".debug"
@@ -52,6 +47,8 @@ android {
     }
 
     compileOptions {
+        // 開啟 Core Library Desugaring，防止 Java 8+ API 在 Android 5.0~7.0 舊電視盒發生 NoClassDefFoundError
+        isCoreLibraryDesugaringEnabled = true
         sourceCompatibility = JavaVersion.VERSION_1_8
         targetCompatibility = JavaVersion.VERSION_1_8
     }
@@ -62,6 +59,9 @@ android {
 }
 
 dependencies {
+    // Java 8+ API 脫糖支援庫 (API 21~24 舊系統必備)
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.0.4")
+
     // 極致輕量原生依賴
     implementation("androidx.core:core-ktx:1.12.0")
     implementation("androidx.appcompat:appcompat:1.6.1")

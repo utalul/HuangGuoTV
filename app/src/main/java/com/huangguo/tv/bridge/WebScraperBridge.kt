@@ -23,23 +23,30 @@ import org.json.JSONObject
 
 /**
  * 隱藏式無頭網頁抓取與串流嗅探引擎
- * 封裝後台隱藏 WebView，保留 SSL 放行、混合內容、18 歲自動穿透，
- * 並即時抓取左側邊欄分類、右側海報牆短劇資料及嗅探 .m3u8 / .mp4 串流。
+ * 針對 32 位元低記憶體 Android TV 進行深度優化：
+ * 1. 延遲初始化 (Lazy Init)：按需建立 WebView，避免同時駐留多個實例引起 OOM。
+ * 2. 15 秒超時保護 (Timeout)：避免因伺服器無響應或 DOM 異常導致 Loading 卡死。
+ * 3. 系統缺少 WebView 元件防護與明確提示。
  */
 class WebScraperBridge(private val context: Context) {
 
     companion object {
         private const val TAG = "WebScraperBridge"
         private const val INTERFACE_NAME = "AndroidBridge"
+        private const val SCRAPE_TIMEOUT_MS = 15000L // 15 秒超時保護
+        const val MSG_MISSING_WEBVIEW = "系統缺少 Android System WebView 元件，請安裝或更新 WebView"
     }
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private val configManager = ConfigManager.getInstance(context)
 
-    // 專職首頁與分類抓取的無頭 WebView
+    // 延遲初始化的無頭 WebView (只有在對應業務呼叫時才建立)
     private var homeWebView: WebView? = null
-    // 專職詳情與選集/串流嗅探的無頭 WebView
     private var detailWebView: WebView? = null
+
+    // WebView 支援與缺失狀態
+    var isWebViewSupported: Boolean = true
+        private set
 
     // 首頁短劇與分類抓取回呼
     private var onHomeScrapedListener: ((List<CategoryItem>, List<DramaItem>) -> Unit)? = null
@@ -50,43 +57,49 @@ class WebScraperBridge(private val context: Context) {
     private var onEpisodesLoadedListener: ((List<EpisodeItem>) -> Unit)? = null
     private var onStreamFoundListener: ((String) -> Unit)? = null
 
+    // 15 秒超時 Runnable 追蹤
+    private var homeTimeoutRunnable: Runnable? = null
+    private var detailTimeoutRunnable: Runnable? = null
+
     // 防止重複回報同一個串流網址
     private var currentSniffedUrl: String? = null
 
-    init {
-        mainHandler.post {
-            initHomeWebView()
-            initDetailWebView()
-        }
-    }
-
     @SuppressLint("SetJavaScriptEnabled")
-    private fun createBaseWebView(): WebView {
-        return WebView(context).apply {
-            settings.javaScriptEnabled = true
-            settings.domStorageEnabled = true
-            settings.databaseEnabled = true
-            settings.useWideViewPort = true
-            settings.loadWithOverviewMode = true
-            settings.allowFileAccess = true
-            settings.allowContentAccess = true
-            settings.cacheMode = WebSettings.LOAD_DEFAULT
-            settings.mediaPlaybackRequiresUserGesture = false
+    private fun createBaseWebView(): WebView? {
+        return try {
+            WebView(context).apply {
+                settings.javaScriptEnabled = true
+                settings.domStorageEnabled = true
+                settings.databaseEnabled = true
+                settings.useWideViewPort = true
+                settings.loadWithOverviewMode = true
+                settings.allowFileAccess = true
+                settings.allowContentAccess = true
+                settings.cacheMode = WebSettings.LOAD_DEFAULT
+                settings.mediaPlaybackRequiresUserGesture = false
 
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                settings.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                    settings.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+                }
+
+                settings.userAgentString = configManager.getEffectiveUserAgent()
             }
-
-            settings.userAgentString = configManager.getEffectiveUserAgent()
+        } catch (t: Throwable) {
+            isWebViewSupported = false
+            Log.e(TAG, "建立 WebView 實例失敗: ${t.message}", t)
+            null
         }
     }
 
     /**
-     * 初始化首頁抓取 WebView
+     * 延遲初始化首頁抓取 WebView
      */
     @SuppressLint("AddJavascriptInterface")
-    private fun initHomeWebView() {
-        val wv = createBaseWebView()
+    private fun initHomeWebView(): Boolean {
+        if (homeWebView != null) return true
+        if (!isWebViewSupported) return false
+
+        val wv = createBaseWebView() ?: return false
         wv.addJavascriptInterface(HomeScraperJsInterface(), INTERFACE_NAME)
         wv.webViewClient = object : WebViewClient() {
             @SuppressLint("WebViewClientOnReceivedSslError")
@@ -101,14 +114,18 @@ class WebScraperBridge(private val context: Context) {
             }
         }
         homeWebView = wv
+        return true
     }
 
     /**
-     * 初始化詳情與串流嗅探 WebView
+     * 延遲初始化詳情與串流嗅探 WebView
      */
     @SuppressLint("AddJavascriptInterface")
-    private fun initDetailWebView() {
-        val wv = createBaseWebView()
+    private fun initDetailWebView(): Boolean {
+        if (detailWebView != null) return true
+        if (!isWebViewSupported) return false
+
+        val wv = createBaseWebView() ?: return false
         wv.addJavascriptInterface(DetailSnifferJsInterface(), INTERFACE_NAME)
         wv.webViewClient = object : WebViewClient() {
             @SuppressLint("WebViewClientOnReceivedSslError")
@@ -140,10 +157,11 @@ class WebScraperBridge(private val context: Context) {
             }
         }
         detailWebView = wv
+        return true
     }
 
     /**
-     * 檢查網址是否為真實影音串流 (.m3u8 / .mp4)，若是則回調給播放器
+     * 檢查網址是否為真實影音串流 (.m3u8 / .mp4)，若是則回調給播放器並取消超時計時
      */
     private fun checkAndNotifyStreamUrl(url: String) {
         val lower = url.lowercase()
@@ -153,6 +171,7 @@ class WebScraperBridge(private val context: Context) {
                 currentSniffedUrl = url
                 Log.i(TAG, "成功嗅探到影片串流網址: $url")
                 mainHandler.post {
+                    cancelDetailTimeout()
                     pauseDetailVideo()
                     onStreamFoundListener?.invoke(url)
                 }
@@ -164,24 +183,64 @@ class WebScraperBridge(private val context: Context) {
      * 暫停背景無頭 WebView 中的 video 播放
      */
     private fun pauseDetailVideo() {
-        detailWebView?.evaluateJavascript(
-            """
-            (function() {
-                try {
-                    var videos = document.querySelectorAll('video');
-                    for (var i = 0; i < videos.length; i++) {
-                        videos[i].pause();
-                        videos[i].muted = true;
-                    }
-                } catch(e) {}
-            })();
-            """.trimIndent(),
-            null
-        )
+        try {
+            detailWebView?.evaluateJavascript(
+                """
+                (function() {
+                    try {
+                        var videos = document.querySelectorAll('video');
+                        for (var i = 0; i < videos.length; i++) {
+                            videos[i].pause();
+                            videos[i].muted = true;
+                        }
+                    } catch(e) {}
+                })();
+                """.trimIndent(),
+                null
+            )
+        } catch (t: Throwable) {
+            Log.w(TAG, "暫停背景影片異常: ${t.message}")
+        }
+    }
+
+    private fun startHomeTimeout() {
+        cancelHomeTimeout()
+        homeTimeoutRunnable = Runnable {
+            Log.w(TAG, "首頁/分類抓取超時 (15s)")
+            onHomeScrapedListener?.invoke(emptyList(), emptyList())
+            onCategoryDramasListener?.invoke(emptyList())
+            onHomeScrapedListener = null
+            onCategoryDramasListener = null
+        }.also {
+            mainHandler.postDelayed(it, SCRAPE_TIMEOUT_MS)
+        }
+    }
+
+    private fun cancelHomeTimeout() {
+        homeTimeoutRunnable?.let { mainHandler.removeCallbacks(it) }
+        homeTimeoutRunnable = null
+    }
+
+    private fun startDetailTimeout() {
+        cancelDetailTimeout()
+        detailTimeoutRunnable = Runnable {
+            Log.w(TAG, "詳情/串流嗅探超時 (15s)")
+            onStreamFoundListener?.invoke("")
+            onEpisodesLoadedListener?.invoke(emptyList())
+            onStreamFoundListener = null
+            onEpisodesLoadedListener = null
+        }.also {
+            mainHandler.postDelayed(it, SCRAPE_TIMEOUT_MS)
+        }
+    }
+
+    private fun cancelDetailTimeout() {
+        detailTimeoutRunnable?.let { mainHandler.removeCallbacks(it) }
+        detailTimeoutRunnable = null
     }
 
     /**
-     * 抓取首頁資料（包含左側邊欄分類與首頁純短劇清單）
+     * 抓取首頁資料（包含左側邊欄分類與首頁純短劇清單，具備 15s 超時保護）
      */
     fun scrapeHomeDataAndCategories(
         url: String,
@@ -189,14 +248,34 @@ class WebScraperBridge(private val context: Context) {
     ) {
         this.onCategoryDramasListener = null
         this.onHomeScrapedListener = callback
+
         mainHandler.post {
-            if (homeWebView == null) initHomeWebView()
-            homeWebView?.loadUrl(url)
+            if (!isWebViewSupported) {
+                Log.e(TAG, MSG_MISSING_WEBVIEW)
+                callback(emptyList(), emptyList())
+                return@post
+            }
+
+            try {
+                if (!initHomeWebView()) {
+                    callback(emptyList(), emptyList())
+                    return@post
+                }
+                startHomeTimeout()
+                homeWebView?.loadUrl(url) ?: run {
+                    cancelHomeTimeout()
+                    callback(emptyList(), emptyList())
+                }
+            } catch (t: Throwable) {
+                cancelHomeTimeout()
+                Log.e(TAG, "scrapeHomeDataAndCategories 異常: ${t.message}", t)
+                callback(emptyList(), emptyList())
+            }
         }
     }
 
     /**
-     * 載入指定分類頁面並抓取該分類下的短劇清單
+     * 載入指定分類頁面並抓取該分類下的短劇清單（具備 15s 超時保護）
      */
     fun loadCategory(
         categoryUrl: String,
@@ -204,14 +283,34 @@ class WebScraperBridge(private val context: Context) {
     ) {
         this.onHomeScrapedListener = null
         this.onCategoryDramasListener = callback
+
         mainHandler.post {
-            if (homeWebView == null) initHomeWebView()
-            homeWebView?.loadUrl(categoryUrl)
+            if (!isWebViewSupported) {
+                Log.e(TAG, MSG_MISSING_WEBVIEW)
+                callback(emptyList())
+                return@post
+            }
+
+            try {
+                if (!initHomeWebView()) {
+                    callback(emptyList())
+                    return@post
+                }
+                startHomeTimeout()
+                homeWebView?.loadUrl(categoryUrl) ?: run {
+                    cancelHomeTimeout()
+                    callback(emptyList())
+                }
+            } catch (t: Throwable) {
+                cancelHomeTimeout()
+                Log.e(TAG, "loadCategory 異常: ${t.message}", t)
+                callback(emptyList())
+            }
         }
     }
 
     /**
-     * 開始嗅探詳情頁選集與影片串流
+     * 開始嗅探詳情頁選集與影片串流（延遲初始化 + 15s 超時保護）
      */
     fun loadDramaDetail(
         detailUrl: String,
@@ -223,36 +322,65 @@ class WebScraperBridge(private val context: Context) {
         this.onStreamFoundListener = onStreamFound
 
         mainHandler.post {
-            if (detailWebView == null) initDetailWebView()
-            detailWebView?.loadUrl(detailUrl)
+            if (!isWebViewSupported) {
+                Log.e(TAG, MSG_MISSING_WEBVIEW)
+                onStreamFound("")
+                onEpisodesLoaded(emptyList())
+                return@post
+            }
+
+            try {
+                if (!initDetailWebView()) {
+                    onStreamFound("")
+                    onEpisodesLoaded(emptyList())
+                    return@post
+                }
+                startDetailTimeout()
+                detailWebView?.loadUrl(detailUrl)
+            } catch (t: Throwable) {
+                cancelDetailTimeout()
+                Log.e(TAG, "loadDramaDetail 異常: ${t.message}", t)
+                onStreamFound("")
+                onEpisodesLoaded(emptyList())
+            }
         }
     }
 
     /**
-     * 切換選集嗅探指定集數連結
+     * 切換選集嗅探指定集數連結（具備 15s 超時保護）
      */
     fun sniffEpisodeStream(episodeUrl: String, onStreamFound: (String) -> Unit) {
         this.currentSniffedUrl = null
         this.onStreamFoundListener = onStreamFound
 
         mainHandler.post {
-            if (detailWebView == null) initDetailWebView()
-            detailWebView?.loadUrl(episodeUrl)
+            if (!isWebViewSupported) {
+                Log.e(TAG, MSG_MISSING_WEBVIEW)
+                onStreamFound("")
+                return@post
+            }
+
+            try {
+                if (!initDetailWebView()) {
+                    onStreamFound("")
+                    return@post
+                }
+                startDetailTimeout()
+                detailWebView?.loadUrl(episodeUrl)
+            } catch (t: Throwable) {
+                cancelDetailTimeout()
+                Log.e(TAG, "sniffEpisodeStream 異常: ${t.message}", t)
+                onStreamFound("")
+            }
         }
     }
 
     /**
      * 注入首頁與分類抓取核心 JS
-     * 徹底實施：
-     * 1. 黑名單字眼過濾（Telegram、gmail、關於我們、下載、客服等）
-     * 2. 「XX部劇集」提取至分類列表，不放入海報牆
-     * 3. 精準提取真實劇名（排除排行榜數字、排除「立即播放」等按鈕字眼）
-     * 4. 完整提取封面圖（支援 img 多重屬性與 CSS background-image，補全絕對網址）
      */
     private fun injectDataScrapingScript(wv: WebView) {
         val js = """
             (function() {
-                // 1. 自動穿透 18 歲年齡確認與關閉通知
                 try {
                     ['isAdult', 'adult', 'is_adult', 'age_verify', 'has_confirmed_age', 'age_confirmed'].forEach(function(k) {
                         localStorage.setItem(k, 'true');
@@ -276,7 +404,6 @@ class WebScraperBridge(private val context: Context) {
                 }
                 autoClickAge();
 
-                // 2. 頁面向下滾動觸發懶載入
                 window.scrollBy({ top: 1200, behavior: 'instant' });
 
                 setTimeout(function() {
@@ -297,7 +424,6 @@ class WebScraperBridge(private val context: Context) {
                         return false;
                     }
 
-                    // 轉換絕對路徑
                     function toAbsoluteUrl(url) {
                         if (!url) return '';
                         try {
@@ -307,7 +433,6 @@ class WebScraperBridge(private val context: Context) {
                         }
                     }
 
-                    // 檢查是否為有效封面圖片
                     function isValidImageUrl(url) {
                         if (!url) return false;
                         var lower = url.toLowerCase();
@@ -316,7 +441,6 @@ class WebScraperBridge(private val context: Context) {
                         return true;
                     }
 
-                    // 提取元素或子節點背景圖
                     function extractBackgroundImage(el) {
                         if (!el) return '';
                         var candidates = [el];
@@ -337,13 +461,10 @@ class WebScraperBridge(private val context: Context) {
                         return '';
                     }
 
-                    // ==========================================
-                    // 一、解析左側分類列表 (導航選單 + 合集專題)
-                    // ==========================================
+                    // 1. 解析左側分類列表
                     var categories = [];
                     var visitedCatUrls = {};
 
-                    // 預設第一項：首頁推薦
                     categories.push({
                         id: 'cat_home',
                         title: '首頁推薦',
@@ -352,7 +473,6 @@ class WebScraperBridge(private val context: Context) {
                     });
                     visitedCatUrls[location.href] = true;
 
-                    // 1. 導覽列分類 (van-tab, nav a, menu a, category a 等)
                     var navLinks = document.querySelectorAll(
                         '.van-tab, nav a, .nav a, .menu a, [class*="category"] a, [class*="nav"] a, a[href*="cat"], a[href*="type"], a[href*="class"]'
                     );
@@ -375,7 +495,6 @@ class WebScraperBridge(private val context: Context) {
                         }
                     }
 
-                    // 2. 提取「XX部劇集 / XX部剧集」合集專題作為分類
                     var allElements = document.querySelectorAll('a, .van-card, [class*="item"], [class*="card"], [class*="topic"], div');
                     for (var t = 0; t < allElements.length; t++) {
                         var tEl = allElements[t];
@@ -387,7 +506,6 @@ class WebScraperBridge(private val context: Context) {
                             var tLink = (tEl.tagName.toUpperCase() === 'A') ? tEl.href : (tEl.querySelector('a') ? tEl.querySelector('a').href : '');
                             tLink = toAbsoluteUrl(tLink);
                             if (tLink && !visitedCatUrls[tLink]) {
-                                // 提取合集標題（排除數字與部劇集）
                                 var cleanedTitle = tText.replace(/(\d+)\s*部[劇剧]集/g, '')
                                                         .replace(/共\s*\d+\s*部/g, '')
                                                         .replace(/\n+/g, ' ')
@@ -406,9 +524,7 @@ class WebScraperBridge(private val context: Context) {
                         }
                     }
 
-                    // ==========================================
-                    // 二、解析右側海報牆（過濾雜訊，精準提取真實劇名）
-                    // ==========================================
+                    // 2. 解析右側海報牆
                     var dramaResults = [];
                     var visitedDramaUrls = {};
 
@@ -420,13 +536,9 @@ class WebScraperBridge(private val context: Context) {
                         var card = cards[c];
                         var cardText = (card.innerText || card.textContent || '').trim();
 
-                        // 1. 黑名單排除
                         if (isBlacklisted(cardText)) continue;
-
-                        // 2. 若為「XX部劇集」合集入口，排除於單部劇海報牆外
                         if (/(\d+)\s*部[劇剧]集/.test(cardText) || /共\s*(\d+)\s*部/.test(cardText)) continue;
 
-                        // 提取跳轉連結
                         var aTag = (card.tagName.toUpperCase() === 'A') ? card : card.querySelector('a');
                         var href = aTag ? aTag.href : '';
                         if (!href || href.indexOf('javascript') === 0 || href.indexOf('.apk') !== -1) continue;
@@ -434,7 +546,6 @@ class WebScraperBridge(private val context: Context) {
                         if (isBlacklisted(href)) continue;
                         if (visitedDramaUrls[href]) continue;
 
-                        // 3. 提取封面圖 (優先 img 多屬性，次選 CSS background-image)
                         var cover = '';
                         var img = card.querySelector('img');
                         if (img) {
@@ -452,11 +563,9 @@ class WebScraperBridge(private val context: Context) {
                             cover = extractBackgroundImage(card);
                         }
 
-                        // 4. 精準提取真實劇名 (過濾純數字、按鈕字眼與集數角標)
                         var title = '';
                         var badge = '';
 
-                        // 搜尋卡片內所有可能帶文字的節點
                         var textNodes = card.querySelectorAll(
                             '.title, [class*="title"], [class*="name"], h1, h2, h3, h4, p, span, div'
                         );
@@ -464,23 +573,20 @@ class WebScraperBridge(private val context: Context) {
 
                         for (var tn = 0; tn < textNodes.length; tn++) {
                             var el = textNodes[tn];
-                            if (el.children.length > 2) continue; // 略過大容器
+                            if (el.children.length > 2) continue;
                             var t = (el.innerText || el.textContent || '').trim();
                             if (!t || isBlacklisted(t)) continue;
 
-                            // 檢查是否為角標 (更新至XX集、全XX集、完結)
                             if (/更新至\s*\d+\s*集/.test(t) || /全\s*\d+\s*集/.test(t) || t === '完結' || t === '完结') {
                                 if (!badge) badge = t;
                                 continue;
                             }
 
-                            // 檢查是否為排名純數字 (如 1, 2, 3...)
                             if (/^\d{1,3}$/.test(t) || /^TOP\s*\d+/i.test(t)) {
                                 if (!badge) badge = 'TOP ' + t.replace(/[^0-9]/g, '');
                                 continue;
                             }
 
-                            // 檢查是否為按鈕文字
                             if (t === '立即播放' || t === '立即观看' || t === '播放' || t === '观看' || t === '進入網站' || t === '进入网站') {
                                 continue;
                             }
@@ -488,13 +594,11 @@ class WebScraperBridge(private val context: Context) {
                             candidateTitles.push(t);
                         }
 
-                        // 在候選文字中挑選最長且最合理的作為真實劇名
                         candidateTitles.sort(function(a, b) { return b.length - a.length; });
                         if (candidateTitles.length > 0) {
                             title = candidateTitles[0];
                         }
 
-                        // 備援提取：a 標籤 title 或 img alt
                         if (!title && aTag) {
                             var aTitle = (aTag.getAttribute('title') || '').trim();
                             if (aTitle && !isBlacklisted(aTitle)) title = aTitle;
@@ -504,12 +608,10 @@ class WebScraperBridge(private val context: Context) {
                             if (alt && !isBlacklisted(alt)) title = alt;
                         }
 
-                        // 再次檢驗：若劇名仍為純數字或按鈕字眼，判定為無效
                         if (!title || /^\d+$/.test(title) || title === '立即播放' || title === '播放') {
                             continue;
                         }
 
-                        // 若沒有圖片且標題太短，可能是頁尾連結，丟棄
                         if (!cover && title.length < 3) continue;
 
                         visitedDramaUrls[href] = true;
@@ -522,7 +624,6 @@ class WebScraperBridge(private val context: Context) {
                         });
                     }
 
-                    // 回傳給 Kotlin
                     if (window.${INTERFACE_NAME} && window.${INTERFACE_NAME}.onDataScraped) {
                         window.${INTERFACE_NAME}.onDataScraped(
                             JSON.stringify(categories),
@@ -532,7 +633,11 @@ class WebScraperBridge(private val context: Context) {
                 }, 1000);
             })();
         """.trimIndent()
-        wv.evaluateJavascript(js, null)
+        try {
+            wv.evaluateJavascript(js, null)
+        } catch (t: Throwable) {
+            Log.e(TAG, "evaluateJavascript 異常: ${t.message}")
+        }
     }
 
     /**
@@ -548,7 +653,6 @@ class WebScraperBridge(private val context: Context) {
                     });
                 } catch(e) {}
 
-                // 1. 嗅探 DOM 中的 <video> 元素
                 function sniffVideoDOM() {
                     var videos = document.querySelectorAll('video');
                     for (var i = 0; i < videos.length; i++) {
@@ -570,7 +674,6 @@ class WebScraperBridge(private val context: Context) {
                 }
                 sniffVideoDOM();
 
-                // 2. 提取分集按鈕與集數連結
                 function scrapeEpisodes() {
                     var epList = [];
                     var visited = {};
@@ -626,7 +729,11 @@ class WebScraperBridge(private val context: Context) {
                 }, 800);
             })();
         """.trimIndent()
-        wv.evaluateJavascript(js, null)
+        try {
+            wv.evaluateJavascript(js, null)
+        } catch (t: Throwable) {
+            Log.e(TAG, "evaluateJavascript 嗅探異常: ${t.message}")
+        }
     }
 
     /**
@@ -636,6 +743,7 @@ class WebScraperBridge(private val context: Context) {
         @JavascriptInterface
         fun onDataScraped(categoriesJson: String, dramasJson: String) {
             mainHandler.post {
+                cancelHomeTimeout()
                 try {
                     val categoryList = mutableListOf<CategoryItem>()
                     val catArray = JSONArray(categoriesJson)
@@ -668,7 +776,6 @@ class WebScraperBridge(private val context: Context) {
 
                     Log.i(TAG, "成功解析分類 ${categoryList.size} 項，短劇 ${dramaList.size} 部")
 
-                    // 分發回呼
                     onHomeScrapedListener?.invoke(categoryList, dramaList)
                     onCategoryDramasListener?.invoke(dramaList)
 
@@ -718,6 +825,8 @@ class WebScraperBridge(private val context: Context) {
 
     fun destroy() {
         mainHandler.post {
+            cancelHomeTimeout()
+            cancelDetailTimeout()
             try {
                 homeWebView?.stopLoading()
                 homeWebView?.destroy()
