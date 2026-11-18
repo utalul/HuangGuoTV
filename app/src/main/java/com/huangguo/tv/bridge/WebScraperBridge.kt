@@ -18,6 +18,7 @@ import com.huangguo.tv.config.ConfigManager
 import com.huangguo.tv.model.CategoryItem
 import com.huangguo.tv.model.DramaItem
 import com.huangguo.tv.model.EpisodeItem
+import com.huangguo.tv.model.SubTabItem
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -48,8 +49,8 @@ class WebScraperBridge(private val context: Context) {
     var isWebViewSupported: Boolean = true
         private set
 
-    // 首頁短劇與分類抓取回呼
-    private var onHomeScrapedListener: ((List<CategoryItem>, List<DramaItem>) -> Unit)? = null
+    // 首頁短劇、分類與橫向子分類抓取回呼
+    private var onHomeScrapedListener: ((List<CategoryItem>, List<SubTabItem>, List<DramaItem>) -> Unit)? = null
     // 單一分類短劇抓取回呼
     private var onCategoryDramasListener: ((List<DramaItem>) -> Unit)? = null
 
@@ -207,7 +208,7 @@ class WebScraperBridge(private val context: Context) {
         cancelHomeTimeout()
         homeTimeoutRunnable = Runnable {
             Log.w(TAG, "首頁/分類抓取超時 (15s)")
-            onHomeScrapedListener?.invoke(emptyList(), emptyList())
+            onHomeScrapedListener?.invoke(emptyList(), emptyList(), emptyList())
             onCategoryDramasListener?.invoke(emptyList())
             onHomeScrapedListener = null
             onCategoryDramasListener = null
@@ -240,11 +241,11 @@ class WebScraperBridge(private val context: Context) {
     }
 
     /**
-     * 抓取首頁資料（包含左側邊欄分類與首頁純短劇清單，具備 15s 超時保護）
+     * 抓取首頁資料（包含左側邊欄分類、上方橫向子分類與首頁短劇清單，具備 15s 超時保護）
      */
     fun scrapeHomeDataAndCategories(
         url: String,
-        callback: (List<CategoryItem>, List<DramaItem>) -> Unit
+        callback: (List<CategoryItem>, List<SubTabItem>, List<DramaItem>) -> Unit
     ) {
         this.onCategoryDramasListener = null
         this.onHomeScrapedListener = callback
@@ -252,24 +253,24 @@ class WebScraperBridge(private val context: Context) {
         mainHandler.post {
             if (!isWebViewSupported) {
                 Log.e(TAG, MSG_MISSING_WEBVIEW)
-                callback(emptyList(), emptyList())
+                callback(emptyList(), emptyList(), emptyList())
                 return@post
             }
 
             try {
                 if (!initHomeWebView()) {
-                    callback(emptyList(), emptyList())
+                    callback(emptyList(), emptyList(), emptyList())
                     return@post
                 }
                 startHomeTimeout()
                 homeWebView?.loadUrl(url) ?: run {
                     cancelHomeTimeout()
-                    callback(emptyList(), emptyList())
+                    callback(emptyList(), emptyList(), emptyList())
                 }
             } catch (t: Throwable) {
                 cancelHomeTimeout()
                 Log.e(TAG, "scrapeHomeDataAndCategories 異常: ${t.message}", t)
-                callback(emptyList(), emptyList())
+                callback(emptyList(), emptyList(), emptyList())
             }
         }
     }
@@ -377,6 +378,11 @@ class WebScraperBridge(private val context: Context) {
 
     /**
      * 注入首頁與分類抓取核心 JS
+     * 支援：
+     * 1. 4 次多段滾動 (每 400ms 滾動 window.innerHeight) 觸發懶載入完整 DOM
+     * 2. 保留左側邊欄 8 個一級大分類
+     * 3. 解析並輸出首頁上方五大板塊、專題合集與熱門標籤
+     * 4. 全量掃描短劇卡片，標記所屬板塊 (精選推薦、最近上新、熱播短劇) 與標籤
      */
     private fun injectDataScrapingScript(wv: WebView) {
         val js = """
@@ -404,29 +410,57 @@ class WebScraperBridge(private val context: Context) {
                 }
                 autoClickAge();
 
-                window.scrollBy({ top: 1200, behavior: 'instant' });
+                // 1. 多段式自動滾動，確保懶載入的「精選推薦」、「最近上新」、「熱播短劇」板塊全數渲染
+                var scrollCount = 0;
+                var maxScrolls = 4;
+                var scrollInterval = setInterval(function() {
+                    scrollCount++;
+                    autoClickAge();
+                    window.scrollBy({ top: window.innerHeight || 900, behavior: 'instant' });
+                    if (scrollCount >= maxScrolls) {
+                        clearInterval(scrollInterval);
+                        setTimeout(function() {
+                            doFullScrape();
+                        }, 400);
+                    }
+                }, 400);
 
-                setTimeout(function() {
+                function doFullScrape() {
                     autoClickAge();
 
-                    var blacklistWords = [
-                        'telegram', 'tg', 'gmail', '@', '域名', '賬號', '帳號',
+                    var nonDramaKeywords = [
+                        '排行榜', '回家的路', '個人中心', '个人中心', '上眾享', '上众享', '賺佣金', '赚佣金',
+                        'telegram', 'tg', 'gmail', '@', '域名', '賬號', '帳號', '账号', '帐号',
                         '關於我們', '关于我们', 'app', '下載', '下载', '登錄', '登录',
-                        '客服', '聯繫', '联系', '版權', '版权', '廣告', '广告', '官方群'
+                        '客服', '聯繫', '联系', '版權', '版权', '廣告', '广告', '官方群',
+                        '收藏', '歷史記錄', '历史记录', '加入我們', '加入我们', '立即播放', '立即观看',
+                        '播放', '观看'
                     ];
 
                     function isBlacklisted(str) {
                         if (!str) return false;
                         var lower = str.toLowerCase();
-                        for (var i = 0; i < blacklistWords.length; i++) {
-                            if (lower.indexOf(blacklistWords[i]) !== -1) return true;
+                        for (var i = 0; i < nonDramaKeywords.length; i++) {
+                            if (lower.indexOf(nonDramaKeywords[i].toLowerCase()) !== -1) return true;
+                        }
+                        return false;
+                    }
+
+                    function isStrictDramaTitleBlacklisted(str) {
+                        if (!str) return true;
+                        var lower = str.toLowerCase().trim();
+                        for (var i = 0; i < nonDramaKeywords.length; i++) {
+                            var kw = nonDramaKeywords[i].toLowerCase();
+                            if (lower === kw || lower.indexOf(kw) !== -1) return true;
                         }
                         return false;
                     }
 
                     function toAbsoluteUrl(url) {
                         if (!url) return '';
+                        url = url.trim();
                         try {
+                            if (url.indexOf('//') === 0) return location.protocol + url;
                             return new URL(url, location.href).href;
                         } catch(e) {
                             return url;
@@ -444,6 +478,7 @@ class WebScraperBridge(private val context: Context) {
                     function extractBackgroundImage(el) {
                         if (!el) return '';
                         var candidates = [el];
+                        if (el.parentElement) candidates.push(el.parentElement);
                         var children = el.querySelectorAll('div, span, a, section, i');
                         for (var c = 0; c < Math.min(children.length, 6); c++) {
                             candidates.push(children[c]);
@@ -461,73 +496,229 @@ class WebScraperBridge(private val context: Context) {
                         return '';
                     }
 
-                    // 1. 解析左側分類列表
+                    function extractCoverFromElement(card) {
+                        var cover = '';
+                        var img = card.querySelector('img');
+                        if (img) {
+                            var rawSrc = img.getAttribute('data-src') ||
+                                         img.getAttribute('data-original') ||
+                                         img.getAttribute('data-lazy-src') ||
+                                         img.getAttribute('data-background') ||
+                                         img.getAttribute('data-srcset') ||
+                                         img.currentSrc ||
+                                         img.src || '';
+                            if (rawSrc && rawSrc.indexOf(',') !== -1) {
+                                var parts = rawSrc.split(',');
+                                rawSrc = parts[parts.length - 1].trim().split(' ')[0];
+                            }
+                            if (isValidImageUrl(rawSrc)) {
+                                cover = toAbsoluteUrl(rawSrc);
+                            }
+                        }
+                        if (!cover) {
+                            cover = extractBackgroundImage(card);
+                        }
+                        return cover;
+                    }
+
+                    function isValidDramaUrl(href) {
+                        if (!href) return false;
+                        var lower = href.toLowerCase();
+                        if (lower.indexOf('javascript') === 0 || lower.indexOf('.apk') !== -1) return false;
+                        try {
+                            var u = new URL(href, location.href);
+                            var path = u.pathname;
+                            if (path === '/' || path === '') return false;
+                            if (path.indexOf('/category') === 0 || path.indexOf('/cat') === 0 || path.indexOf('/type') === 0) return false;
+                            if (path.indexOf('/tag') === 0 || path.indexOf('/tags') === 0) return false;
+                            if (path.indexOf('/topic') === 0 || path.indexOf('/topics') === 0) return false;
+                            if (path.indexOf('/search') === 0) return false;
+                            if (path.indexOf('/member') === 0 || path.indexOf('/user') === 0) return false;
+
+                            if (lower.indexOf('play') !== -1 || lower.indexOf('video') !== -1 ||
+                                lower.indexOf('detail') !== -1 || lower.indexOf('vod') !== -1 ||
+                                lower.indexOf('drama') !== -1 || lower.indexOf('item') !== -1 ||
+                                /\d+/.test(path) || path.indexOf('.html') !== -1) {
+                                return true;
+                            }
+                            var segments = path.split('/').filter(Boolean);
+                            return segments.length >= 1;
+                        } catch(e) {
+                            return false;
+                        }
+                    }
+
+                    function hasEpisodeBadge(badge) {
+                        if (!badge) return false;
+                        return /更新至\s*\d+\s*集/.test(badge) ||
+                               /全\s*\d+\s*集/.test(badge) ||
+                               badge.indexOf('集') !== -1 ||
+                               badge.indexOf('完結') !== -1 ||
+                               badge.indexOf('完结') !== -1 ||
+                               badge.indexOf('更新') !== -1;
+                    }
+
+                    // A. 左側邊欄一級大分類（首頁推薦、黃果原創、短劇、漫劇、專題、排行榜、博客、黑料吃瓜）
                     var categories = [];
                     var visitedCatUrls = {};
-
-                    categories.push({
-                        id: 'cat_home',
-                        title: '首頁推薦',
-                        url: location.href,
-                        count: ''
-                    });
-                    visitedCatUrls[location.href] = true;
+                    var standardCategories = [
+                        { id: 'cat_home', title: '首頁推薦', path: '/' },
+                        { id: 'cat_orig', title: '黃果原創', path: '/original' },
+                        { id: 'cat_short', title: '短劇', path: '/short' },
+                        { id: 'cat_comic', title: '漫劇', path: '/comic' },
+                        { id: 'cat_topic', title: '專題', path: '/topic' },
+                        { id: 'cat_rank', title: '排行榜', path: '/rank' },
+                        { id: 'cat_blog', title: '博客', path: '/blog' },
+                        { id: 'cat_gossip', title: '黑料吃瓜', path: '/gossip' }
+                    ];
 
                     var navLinks = document.querySelectorAll(
-                        '.van-tab, nav a, .nav a, .menu a, [class*="category"] a, [class*="nav"] a, a[href*="cat"], a[href*="type"], a[href*="class"]'
+                        '.van-tab, nav a, .nav a, .menu a, [class*="category"] a, [class*="nav"] a, a[href*="cat"], a[href*="type"], a[href*="class"], a'
                     );
+                    var foundNavMap = {};
                     for (var n = 0; n < navLinks.length; n++) {
                         var nEl = navLinks[n];
                         var nTitle = (nEl.innerText || nEl.textContent || '').trim();
                         var nHref = (nEl.tagName.toUpperCase() === 'A') ? nEl.href : (nEl.querySelector('a') ? nEl.querySelector('a').href : '');
                         nHref = toAbsoluteUrl(nHref);
-
-                        if (!nTitle || nTitle.length > 10 || isBlacklisted(nTitle)) continue;
-                        if (nTitle === '首頁' || nTitle === '首页' || nTitle === '推薦' || nTitle === '推荐') continue;
-                        if (nHref && !visitedCatUrls[nHref]) {
-                            visitedCatUrls[nHref] = true;
-                            categories.push({
-                                id: 'cat_' + categories.length,
-                                title: nTitle,
-                                url: nHref,
-                                count: ''
-                            });
-                        }
+                        if (!nTitle || !nHref || nTitle.length > 10 || isBlacklisted(nTitle)) continue;
+                        foundNavMap[nTitle] = nHref;
                     }
 
-                    var allElements = document.querySelectorAll('a, .van-card, [class*="item"], [class*="card"], [class*="topic"], div');
-                    for (var t = 0; t < allElements.length; t++) {
-                        var tEl = allElements[t];
+                    for (var s = 0; s < standardCategories.length; s++) {
+                        var sc = standardCategories[s];
+                        var realUrl = foundNavMap[sc.title] || '';
+                        if (!realUrl) {
+                            for (var nk in foundNavMap) {
+                                if (nk.indexOf(sc.title) !== -1 || sc.title.indexOf(nk) !== -1) {
+                                    realUrl = foundNavMap[nk];
+                                    break;
+                                }
+                            }
+                        }
+                        if (!realUrl) {
+                            realUrl = toAbsoluteUrl(sc.path);
+                        }
+                        categories.push({
+                            id: sc.id,
+                            title: sc.title,
+                            url: realUrl,
+                            count: ''
+                        });
+                        visitedCatUrls[realUrl] = true;
+                    }
+
+                    // B. 首頁上方橫向子分類 Tab（主板塊、專題推薦、熱門標籤）
+                    var subTabs = [];
+                    subTabs.push({ id: 'tab_all', title: '全部精選', url: '', type: 'SECTION' });
+                    subTabs.push({ id: 'tab_featured', title: '精選推薦', url: '', type: 'SECTION' });
+                    subTabs.push({ id: 'tab_latest', title: '最近上新', url: '', type: 'SECTION' });
+                    subTabs.push({ id: 'tab_hot', title: '熱播短劇', url: '', type: 'SECTION' });
+
+                    var defaultTopics = ['81部精品高分', '68部家庭倫理', '100部天菜男同'];
+                    var foundTopics = {};
+                    var topicElements = document.querySelectorAll('a, .van-card, [class*="topic"], [class*="collection"], div');
+                    for (var t = 0; t < topicElements.length; t++) {
+                        var tEl = topicElements[t];
                         var tText = (tEl.innerText || tEl.textContent || '').trim();
                         if (!tText || isBlacklisted(tText)) continue;
-
-                        var matchCount = tText.match(/(\d+)\s*部[劇剧]集/) || tText.match(/共\s*(\d+)\s*部/);
+                        var matchCount = tText.match(/(\d+)\s*部([^\n\r]+)/);
                         if (matchCount) {
                             var tLink = (tEl.tagName.toUpperCase() === 'A') ? tEl.href : (tEl.querySelector('a') ? tEl.querySelector('a').href : '');
                             tLink = toAbsoluteUrl(tLink);
-                            if (tLink && !visitedCatUrls[tLink]) {
-                                var cleanedTitle = tText.replace(/(\d+)\s*部[劇剧]集/g, '')
-                                                        .replace(/共\s*\d+\s*部/g, '')
-                                                        .replace(/\n+/g, ' ')
-                                                        .trim();
-                                if (cleanedTitle.length > 12) cleanedTitle = cleanedTitle.substring(0, 12);
-                                if (!cleanedTitle) cleanedTitle = '精選合集';
-
-                                visitedCatUrls[tLink] = true;
-                                categories.push({
-                                    id: 'cat_topic_' + categories.length,
-                                    title: cleanedTitle,
+                            var topicTitle = (matchCount[1] + '部' + matchCount[2]).trim().substring(0, 12);
+                            if (!foundTopics[topicTitle]) {
+                                foundTopics[topicTitle] = true;
+                                subTabs.push({
+                                    id: 'tab_topic_' + subTabs.length,
+                                    title: topicTitle,
                                     url: tLink,
-                                    count: matchCount[1] + '部'
+                                    type: 'TOPIC'
                                 });
                             }
                         }
                     }
+                    for (var dt = 0; dt < defaultTopics.length; dt++) {
+                        if (!foundTopics[defaultTopics[dt]]) {
+                            subTabs.push({
+                                id: 'tab_topic_' + subTabs.length,
+                                title: defaultTopics[dt],
+                                url: '',
+                                type: 'TOPIC'
+                            });
+                        }
+                    }
 
-                    // 2. 解析右側海報牆
-                    var dramaResults = [];
-                    var visitedDramaUrls = {};
+                    var defaultTags = [
+                        '都市', '古風', '奇幻', '現代', '職場', '逆襲', '校園', '綠帽', '熟女', '母子', '亂倫',
+                        '系統', '仙俠', '后宮', '大男主', '性轉', '腦洞', '懸疑', 'NTR', '武俠'
+                    ];
+                    var foundTags = {};
+                    var tagElements = document.querySelectorAll('[class*="tag"] a, .tags a, [class*="tag"] span, .tags span, a[href*="tag"]');
+                    for (var tg = 0; tg < tagElements.length; tg++) {
+                        var tagText = (tagElements[tg].innerText || tagElements[tg].textContent || '').trim();
+                        var tagHref = (tagElements[tg].tagName.toUpperCase() === 'A') ? tagElements[tg].href : '';
+                        if (tagText && tagText.length <= 6 && !isBlacklisted(tagText)) {
+                            if (!foundTags[tagText]) {
+                                foundTags[tagText] = true;
+                                subTabs.push({
+                                    id: 'tab_tag_' + subTabs.length,
+                                    title: tagText,
+                                    url: toAbsoluteUrl(tagHref),
+                                    type: 'TAG'
+                                });
+                            }
+                        }
+                    }
+                    for (var dti = 0; dti < defaultTags.length; dti++) {
+                        if (!foundTags[defaultTags[dti]]) {
+                            subTabs.push({
+                                id: 'tab_tag_' + subTabs.length,
+                                title: defaultTags[dti],
+                                url: '',
+                                type: 'TAG'
+                            });
+                        }
+                    }
 
+                    // C. 全量卡片掃描與分組歸類
+                    function detectSection(el, index, total) {
+                        var current = el;
+                        while (current && current !== document.body) {
+                            var prev = current;
+                            while (prev) {
+                                var headings = prev.querySelectorAll ? prev.querySelectorAll('h1, h2, h3, h4, .van-cell__title, [class*="title"], [class*="header"]') : [];
+                                for (var h = 0; h < headings.length; h++) {
+                                    var ht = (headings[h].innerText || headings[h].textContent || '').trim();
+                                    if (ht) {
+                                        if (ht.indexOf('精選') !== -1 || ht.indexOf('精选') !== -1 || ht.indexOf('推薦') !== -1 || ht.indexOf('推荐') !== -1) return '精選推薦';
+                                        if (ht.indexOf('上新') !== -1 || ht.indexOf('最新') !== -1) return '最近上新';
+                                        if (ht.indexOf('熱播') !== -1 || ht.indexOf('热播') !== -1 || ht.indexOf('火熱') !== -1) return '熱播短劇';
+                                    }
+                                }
+                                prev = prev.previousElementSibling;
+                            }
+                            current = current.parentElement;
+                        }
+                        if (total > 0) {
+                            var ratio = index / total;
+                            if (ratio < 0.35) return '精選推薦';
+                            if (ratio < 0.70) return '最近上新';
+                            return '熱播短劇';
+                        }
+                        return '精選推薦';
+                    }
+
+                    function detectTag(text) {
+                        if (!text) return '';
+                        for (var i = 0; i < defaultTags.length; i++) {
+                            if (text.indexOf(defaultTags[i]) !== -1) return defaultTags[i];
+                        }
+                        return '';
+                    }
+
+                    var dramaMap = {};
+                    var dramaIndex = 0;
                     var cards = document.querySelectorAll(
                         'a, .van-card, [class*="drama"], [class*="item"], [class*="card"], .video-card, li'
                     );
@@ -541,28 +732,11 @@ class WebScraperBridge(private val context: Context) {
 
                         var aTag = (card.tagName.toUpperCase() === 'A') ? card : card.querySelector('a');
                         var href = aTag ? aTag.href : '';
-                        if (!href || href.indexOf('javascript') === 0 || href.indexOf('.apk') !== -1) continue;
+                        if (!href) continue;
                         href = toAbsoluteUrl(href);
-                        if (isBlacklisted(href)) continue;
-                        if (visitedDramaUrls[href]) continue;
+                        if (!href || isBlacklisted(href)) continue;
 
-                        var cover = '';
-                        var img = card.querySelector('img');
-                        if (img) {
-                            var rawSrc = img.getAttribute('data-src') ||
-                                         img.getAttribute('data-original') ||
-                                         img.getAttribute('data-lazy-src') ||
-                                         img.getAttribute('data-background') ||
-                                         img.currentSrc ||
-                                         img.src || '';
-                            if (isValidImageUrl(rawSrc)) {
-                                cover = toAbsoluteUrl(rawSrc);
-                            }
-                        }
-                        if (!cover) {
-                            cover = extractBackgroundImage(card);
-                        }
-
+                        var cover = extractCoverFromElement(card);
                         var title = '';
                         var badge = '';
 
@@ -603,36 +777,80 @@ class WebScraperBridge(private val context: Context) {
                             var aTitle = (aTag.getAttribute('title') || '').trim();
                             if (aTitle && !isBlacklisted(aTitle)) title = aTitle;
                         }
-                        if (!title && img) {
-                            var alt = (img.getAttribute('alt') || '').trim();
-                            if (alt && !isBlacklisted(alt)) title = alt;
+                        if (!title) {
+                            var img = card.querySelector('img');
+                            if (img) {
+                                var alt = (img.getAttribute('alt') || '').trim();
+                                if (alt && !isBlacklisted(alt)) title = alt;
+                            }
                         }
 
-                        if (!title || /^\d+$/.test(title) || title === '立即播放' || title === '播放') {
-                            continue;
+                        if (!title || /^\d+$/.test(title)) continue;
+                        if (isStrictDramaTitleBlacklisted(title)) continue;
+
+                        var cleanedTitle = title.replace(/[《》【】\[\]\(\)\s\-\_]/g, '').trim();
+                        if (cleanedTitle.length < 4) continue;
+
+                        var badgeValid = hasEpisodeBadge(badge);
+                        var urlValid = isValidDramaUrl(href);
+                        if (!badgeValid && !urlValid) continue;
+
+                        var section = detectSection(card, c, cards.length);
+                        var dramaTag = detectTag(cardText + ' ' + title);
+
+                        var normalizedKey = cleanedTitle.toLowerCase();
+                        var score = 0;
+                        var lowerHref = href.toLowerCase();
+                        if (lowerHref.indexOf('play') !== -1 || lowerHref.indexOf('video') !== -1) score += 100;
+                        if (lowerHref.indexOf('detail') !== -1 || lowerHref.indexOf('vod') !== -1) score += 50;
+                        if (/\d+/.test(lowerHref)) score += 20;
+                        if (cover) score += 15;
+                        if (badgeValid) score += 10;
+
+                        if (!dramaMap[normalizedKey] || score > dramaMap[normalizedKey].score) {
+                            var finalCover = cover || (dramaMap[normalizedKey] ? dramaMap[normalizedKey].item.coverUrl : '');
+                            var finalBadge = badge || (dramaMap[normalizedKey] ? dramaMap[normalizedKey].item.badge : '');
+                            var finalSection = section || (dramaMap[normalizedKey] ? dramaMap[normalizedKey].item.section : '');
+                            var finalTag = dramaTag || (dramaMap[normalizedKey] ? dramaMap[normalizedKey].item.tag : '');
+
+                            dramaMap[normalizedKey] = {
+                                item: {
+                                    id: 'drama_' + (dramaIndex++),
+                                    title: title.replace(/\n+/g, ' ').substring(0, 40),
+                                    coverUrl: finalCover,
+                                    detailUrl: href,
+                                    badge: finalBadge,
+                                    section: finalSection,
+                                    tag: finalTag
+                                },
+                                score: score
+                            };
                         }
+                    }
 
-                        if (!cover && title.length < 3) continue;
-
-                        visitedDramaUrls[href] = true;
-                        dramaResults.push({
-                            id: 'drama_' + dramaResults.length,
-                            title: title.replace(/\n+/g, ' ').substring(0, 40),
-                            coverUrl: cover,
-                            detailUrl: href,
-                            badge: badge
-                        });
+                    var dramaResults = [];
+                    for (var k in dramaMap) {
+                        if (dramaMap.hasOwnProperty(k)) {
+                            dramaResults.push(dramaMap[k].item);
+                        }
                     }
 
                     if (window.${INTERFACE_NAME} && window.${INTERFACE_NAME}.onDataScraped) {
                         window.${INTERFACE_NAME}.onDataScraped(
                             JSON.stringify(categories),
+                            JSON.stringify(subTabs),
                             JSON.stringify(dramaResults)
                         );
                     }
-                }, 1000);
+                }
             })();
         """.trimIndent()
+        try {
+            wv.evaluateJavascript(js, null)
+        } catch (t: Throwable) {
+            Log.e(TAG, "evaluateJavascript 異常: ${t.message}")
+        }
+    }
         try {
             wv.evaluateJavascript(js, null)
         } catch (t: Throwable) {
@@ -653,6 +871,25 @@ class WebScraperBridge(private val context: Context) {
                     });
                 } catch(e) {}
 
+                function triggerPlayClick() {
+                    var playKeywords = ['立即播放', '第1集', '开始播放', '開始播放', '立即观看', '立即觀看', '播放', '观看', '觀看', '全集播放'];
+                    var clickables = document.querySelectorAll('button, a, div, span, [role="button"], .van-button');
+                    for (var i = 0; i < clickables.length; i++) {
+                        var el = clickables[i];
+                        var txt = (el.innerText || el.textContent || '').trim();
+                        if (!txt) continue;
+                        for (var k = 0; k < playKeywords.length; k++) {
+                            if (txt === playKeywords[k] || (txt.indexOf(playKeywords[k]) !== -1 && txt.length <= 8)) {
+                                try {
+                                    el.click();
+                                    return true;
+                                } catch(e) {}
+                            }
+                        }
+                    }
+                    return false;
+                }
+
                 function sniffVideoDOM() {
                     var videos = document.querySelectorAll('video');
                     for (var i = 0; i < videos.length; i++) {
@@ -672,7 +909,10 @@ class WebScraperBridge(private val context: Context) {
                     }
                     return false;
                 }
-                sniffVideoDOM();
+
+                if (!sniffVideoDOM()) {
+                    triggerPlayClick();
+                }
 
                 function scrapeEpisodes() {
                     var epList = [];
@@ -723,6 +963,9 @@ class WebScraperBridge(private val context: Context) {
                 var pollCount = 0;
                 var pollTimer = setInterval(function() {
                     pollCount++;
+                    if (!sniffVideoDOM()) {
+                        triggerPlayClick();
+                    }
                     if (sniffVideoDOM() || pollCount > 15) {
                         clearInterval(pollTimer);
                     }
@@ -741,7 +984,7 @@ class WebScraperBridge(private val context: Context) {
      */
     inner class HomeScraperJsInterface {
         @JavascriptInterface
-        fun onDataScraped(categoriesJson: String, dramasJson: String) {
+        fun onDataScraped(categoriesJson: String, subTabsJson: String, dramasJson: String) {
             mainHandler.post {
                 cancelHomeTimeout()
                 try {
@@ -759,6 +1002,26 @@ class WebScraperBridge(private val context: Context) {
                         )
                     }
 
+                    val subTabList = mutableListOf<SubTabItem>()
+                    val subTabArray = JSONArray(subTabsJson)
+                    for (i in 0 until subTabArray.length()) {
+                        val obj = subTabArray.getJSONObject(i)
+                        val typeStr = obj.optString("type", "SECTION")
+                        val type = when (typeStr) {
+                            "TOPIC" -> SubTabItem.Type.TOPIC
+                            "TAG" -> SubTabItem.Type.TAG
+                            else -> SubTabItem.Type.SECTION
+                        }
+                        subTabList.add(
+                            SubTabItem(
+                                id = obj.optString("id", "tab_$i"),
+                                title = obj.optString("title", ""),
+                                url = obj.optString("url", ""),
+                                type = type
+                            )
+                        )
+                    }
+
                     val dramaList = mutableListOf<DramaItem>()
                     val dramaArray = JSONArray(dramasJson)
                     for (i in 0 until dramaArray.length()) {
@@ -769,22 +1032,32 @@ class WebScraperBridge(private val context: Context) {
                                 title = obj.optString("title", "短劇"),
                                 coverUrl = obj.optString("coverUrl", ""),
                                 detailUrl = obj.optString("detailUrl", ""),
-                                badge = obj.optString("badge", "")
+                                badge = obj.optString("badge", ""),
+                                section = obj.optString("section", ""),
+                                tag = obj.optString("tag", "")
                             )
                         )
                     }
 
-                    Log.i(TAG, "成功解析分類 ${categoryList.size} 項，短劇 ${dramaList.size} 部")
+                    Log.i(TAG, "成功解析分類 ${categoryList.size} 項，子標籤 ${subTabList.size} 個，短劇 ${dramaList.size} 部 (已去重)")
+                    dramaList.take(3).forEach {
+                        Log.d(TAG, "抓取封面範例: [${it.title}] (${it.section}) -> ${it.coverUrl}")
+                    }
 
-                    onHomeScrapedListener?.invoke(categoryList, dramaList)
+                    onHomeScrapedListener?.invoke(categoryList, subTabList, dramaList)
                     onCategoryDramasListener?.invoke(dramaList)
 
                 } catch (e: Exception) {
                     Log.e(TAG, "解析網頁抓取 JSON 失敗: ${e.message}")
-                    onHomeScrapedListener?.invoke(emptyList(), emptyList())
+                    onHomeScrapedListener?.invoke(emptyList(), emptyList(), emptyList())
                     onCategoryDramasListener?.invoke(emptyList())
                 }
             }
+        }
+
+        @JavascriptInterface
+        fun onDataScraped(categoriesJson: String, dramasJson: String) {
+            onDataScraped(categoriesJson, "[]", dramasJson)
         }
     }
 

@@ -1,6 +1,7 @@
 package com.huangguo.tv.adapter
 
 import android.graphics.Color
+import android.view.KeyEvent
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -15,6 +16,7 @@ import com.huangguo.tv.model.CategoryItem
 class CategoryAdapter(
     private var items: List<CategoryItem> = emptyList(),
     private var selectedIndex: Int = 0,
+    var onKeyRight: (() -> Unit)? = null,
     private val onCategoryClick: (CategoryItem, Int) -> Unit
 ) : RecyclerView.Adapter<CategoryAdapter.CategoryViewHolder>() {
 
@@ -46,7 +48,11 @@ class CategoryAdapter(
 
     override fun onBindViewHolder(holder: CategoryViewHolder, position: Int) {
         val item = items[position]
-        holder.bind(item, position == selectedIndex) {
+        holder.bind(
+            item = item,
+            isSelected = (position == selectedIndex),
+            onKeyRight = onKeyRight
+        ) {
             setSelectedIndex(position)
             onCategoryClick(item, position)
         }
@@ -71,7 +77,12 @@ class CategoryAdapter(
             }
         }
 
-        fun bind(item: CategoryItem, isSelected: Boolean, onClick: () -> Unit) {
+        fun bind(
+            item: CategoryItem,
+            isSelected: Boolean,
+            onKeyRight: (() -> Unit)?,
+            onClick: () -> Unit
+        ) {
             tvTitle.text = item.title
             itemView.isSelected = isSelected
 
@@ -88,6 +99,14 @@ class CategoryAdapter(
                 tvCount.text = item.count
             } else {
                 tvCount.visibility = View.GONE
+            }
+
+            itemView.setOnKeyListener { _, keyCode, event ->
+                if (event.action == KeyEvent.ACTION_DOWN && keyCode == KeyEvent.KEYCODE_DPAD_RIGHT) {
+                    onKeyRight?.invoke()
+                    return@setOnKeyListener true
+                }
+                false
             }
 
             itemView.setOnClickListener {

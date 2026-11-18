@@ -2,6 +2,7 @@ package com.huangguo.tv
 
 import android.app.Application
 import android.util.Log
+import coil.Coil
 import coil.ImageLoader
 import coil.ImageLoaderFactory
 import coil.disk.DiskCache
@@ -45,11 +46,19 @@ class HuangGuoApp : Application(), ImageLoaderFactory {
         } catch (t: Throwable) {
             Log.e(TAG, "ConfigManager 初始化異常: ${t.message}", t)
         }
+
+        // 明確註冊全域寬鬆 SSL 與防盜鏈 Coil ImageLoader
+        try {
+            Coil.setImageLoader(newImageLoader())
+            Log.i(TAG, "Coil 全域 ImageLoader 註冊完成")
+        } catch (t: Throwable) {
+            Log.e(TAG, "註冊 Coil ImageLoader 異常: ${t.message}", t)
+        }
     }
 
     /**
      * 全域 Coil ImageLoader 工廠
-     * 支援寬鬆 SSL 憑證驗證，徹底解決 Android 5.0~7.0 舊電視盒因 ISRG Root 根憑證過期導致海報全黑的問題。
+     * 支援寬鬆 SSL 憑證驗證與防盜鏈 Header 自動注入，徹底解決舊電視盒海報圖空白問題。
      */
     override fun newImageLoader(): ImageLoader {
         val client = createCompatOkHttpClient()
@@ -87,6 +96,21 @@ class HuangGuoApp : Application(), ImageLoaderFactory {
                 .hostnameVerifier { _, _ -> true }
                 .connectTimeout(15, TimeUnit.SECONDS)
                 .readTimeout(15, TimeUnit.SECONDS)
+                .addInterceptor { chain ->
+                    val originalRequest = chain.request()
+                    val config = ConfigManager.getInstance(this)
+                    val targetUrl = config.getCurrentTargetUrl()
+                    val ua = config.getEffectiveUserAgent()
+
+                    val builder = originalRequest.newBuilder()
+                    if (originalRequest.header("User-Agent").isNullOrEmpty() && ua.isNotEmpty()) {
+                        builder.header("User-Agent", ua)
+                    }
+                    if (originalRequest.header("Referer").isNullOrEmpty() && targetUrl.isNotEmpty()) {
+                        builder.header("Referer", targetUrl)
+                    }
+                    chain.proceed(builder.build())
+                }
                 .build()
         } catch (e: Exception) {
             Log.w(TAG, "建立寬鬆 SSL OkHttpClient 失敗，降級使用預設值: ${e.message}")

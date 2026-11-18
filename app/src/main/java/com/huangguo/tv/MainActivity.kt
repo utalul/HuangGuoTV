@@ -25,15 +25,17 @@ import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.huangguo.tv.adapter.CategoryAdapter
 import com.huangguo.tv.adapter.DramaAdapter
+import com.huangguo.tv.adapter.SubTabAdapter
 import com.huangguo.tv.bridge.WebScraperBridge
 import com.huangguo.tv.config.ConfigManager
 import com.huangguo.tv.model.CategoryItem
 import com.huangguo.tv.model.DramaItem
+import com.huangguo.tv.model.SubTabItem
 import com.huangguo.tv.update.UpdateManager
 import kotlinx.coroutines.launch
 
 /**
- * 原生 Android TV 雙欄主畫面 (左側分類邊欄 + 右側海報牆)
+ * 原生 Android TV 雙欄主畫面 (左側分類邊欄 + 右側上方子分類 Tab 列 + 海報牆)
  * 具備完整 32 位元電視盒啟動防崩潰保護與螢幕即時錯誤診斷面板
  */
 class MainActivity : AppCompatActivity() {
@@ -55,11 +57,16 @@ class MainActivity : AppCompatActivity() {
     private var btnReload: Button? = null
     private var btnSwitchLine: Button? = null
     private var btnCheckUpdate: Button? = null
+    private var rvSubTabs: RecyclerView? = null
+    private var subTabAdapter: SubTabAdapter? = null
     private var rvDramaGrid: RecyclerView? = null
     private var layoutLoading: LinearLayout? = null
     private var tvLoadingMsg: TextView? = null
     private var tvModeHint: TextView? = null
     private var dramaAdapter: DramaAdapter? = null
+
+    // 首頁抓取到的完整短劇快取 (用於頂部 Tab 即時過濾)
+    private var allHomeDramas: List<DramaItem> = emptyList()
 
     private lateinit var configManager: ConfigManager
     private var updateManager: UpdateManager? = null
@@ -110,6 +117,7 @@ class MainActivity : AppCompatActivity() {
         btnReload = findViewById(R.id.btnReload)
         btnSwitchLine = findViewById(R.id.btnSwitchLine)
         btnCheckUpdate = findViewById(R.id.btnCheckUpdate)
+        rvSubTabs = findViewById(R.id.rvSubTabs)
         rvDramaGrid = findViewById(R.id.rvDramaGrid)
         layoutLoading = findViewById(R.id.layoutLoading)
         tvLoadingMsg = findViewById(R.id.tvLoadingMsg)
@@ -136,17 +144,57 @@ class MainActivity : AppCompatActivity() {
     private fun setupRecyclerViews() {
         // 1. 左側邊欄分類列表 (垂直佈局)
         rvCategories?.layoutManager = LinearLayoutManager(this)
-        categoryAdapter = CategoryAdapter(emptyList()) { category, position ->
+        categoryAdapter = CategoryAdapter(
+            items = emptyList(),
+            onKeyRight = {
+                // 左側邊欄按「右鍵」優先進入上方子分類 Tab 列；若無子分類則進入海報牆
+                if (rvSubTabs?.visibility == View.VISIBLE && (subTabAdapter?.itemCount ?: 0) > 0) {
+                    val pos = subTabAdapter?.getSelectedIndex() ?: 0
+                    rvSubTabs?.findViewHolderForAdapterPosition(pos)?.itemView?.requestFocus()
+                        ?: rvSubTabs?.requestFocus()
+                } else {
+                    rvDramaGrid?.findViewHolderForAdapterPosition(0)?.itemView?.requestFocus()
+                        ?: rvDramaGrid?.requestFocus()
+                }
+            }
+        ) { category, position ->
             tvCurrentCategory?.text = category.title
             if (category.id == "cat_home") {
-                loadHomeData()
+                rvSubTabs?.visibility = View.VISIBLE
+                if (allHomeDramas.isNotEmpty()) {
+                    dramaAdapter?.updateData(allHomeDramas)
+                    rvDramaGrid?.scrollToPosition(0)
+                } else {
+                    loadHomeData()
+                }
             } else {
+                rvSubTabs?.visibility = View.GONE
                 loadCategoryData(category)
             }
         }
         rvCategories?.adapter = categoryAdapter
 
-        // 2. 右側短劇海報網格 (4 欄佈局)
+        // 2. 首頁上方橫向子分類 Tab 列 (水平佈局)
+        rvSubTabs?.layoutManager = LinearLayoutManager(this, LinearLayoutManager.HORIZONTAL, false)
+        subTabAdapter = SubTabAdapter(
+            items = emptyList(),
+            onKeyDown = {
+                // 上方 Tab 列按「下鍵」進入海報牆第一張
+                rvDramaGrid?.findViewHolderForAdapterPosition(0)?.itemView?.requestFocus()
+                    ?: rvDramaGrid?.requestFocus()
+            },
+            onKeyLeftEdge = {
+                // 上方 Tab 第 0 項按「左鍵」回到左側邊欄當前選中項
+                val catIndex = categoryAdapter?.getSelectedIndex() ?: 0
+                rvCategories?.findViewHolderForAdapterPosition(catIndex)?.itemView?.requestFocus()
+                    ?: rvCategories?.requestFocus()
+            }
+        ) { subTab, position ->
+            onSubTabClicked(subTab)
+        }
+        rvSubTabs?.adapter = subTabAdapter
+
+        // 3. 右側短劇海報網格 (4 欄佈局)
         val gridLayoutManager = GridLayoutManager(this, SPAN_COUNT)
         rvDramaGrid?.layoutManager = gridLayoutManager
 
@@ -155,7 +203,21 @@ class MainActivity : AppCompatActivity() {
         dramaAdapter = DramaAdapter(
             items = emptyList(),
             currentBaseUrl = currentHost,
-            userAgent = userAgent
+            userAgent = userAgent,
+            onKeyUpEdge = {
+                // 海報網格第一排按「上鍵」回到上方子分類 Tab 列
+                if (rvSubTabs?.visibility == View.VISIBLE && (subTabAdapter?.itemCount ?: 0) > 0) {
+                    val tabPos = subTabAdapter?.getSelectedIndex() ?: 0
+                    rvSubTabs?.findViewHolderForAdapterPosition(tabPos)?.itemView?.requestFocus()
+                        ?: rvSubTabs?.requestFocus()
+                }
+            },
+            onKeyLeftEdge = {
+                // 最左欄按「左鍵」返回左側邊欄
+                val catIndex = categoryAdapter?.getSelectedIndex() ?: 0
+                rvCategories?.findViewHolderForAdapterPosition(catIndex)?.itemView?.requestFocus()
+                    ?: rvCategories?.requestFocus()
+            }
         ) { dramaItem ->
             openPlayer(dramaItem)
         }
@@ -176,7 +238,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * 載入首頁資料與左側分類清單
+     * 載入首頁資料、左側分類清單與上方橫向子分類 Tab
      */
     private fun loadHomeData() {
         val targetUrl = configManager.getCurrentTargetUrl()
@@ -186,21 +248,29 @@ class MainActivity : AppCompatActivity() {
         tvLoadingMsg?.text = "正在抓取最新分類與短劇清單..."
 
         Log.i(TAG, "開始抓取首頁資料: $targetUrl")
-        webScraperBridge?.scrapeHomeDataAndCategories(targetUrl) { categories, dramas ->
+        webScraperBridge?.scrapeHomeDataAndCategories(targetUrl) { categories, subTabs, dramas ->
             layoutLoading?.visibility = View.GONE
+            allHomeDramas = dramas
 
             if (categories.isNotEmpty()) {
                 categoryAdapter?.updateData(categories, defaultSelected = 0)
                 tvCurrentCategory?.text = categories[0].title
-                // 主動將預設焦點設定在左側邊欄第一項
                 rvCategories?.post {
                     rvCategories?.findViewHolderForAdapterPosition(0)?.itemView?.requestFocus()
                 }
             }
 
+            if (subTabs.isNotEmpty()) {
+                rvSubTabs?.visibility = View.VISIBLE
+                subTabAdapter?.updateData(subTabs, defaultSelected = 0)
+            }
+
             if (dramas.isNotEmpty()) {
                 Log.i(TAG, "首頁短劇抓取成功，共 ${dramas.size} 部")
                 dramaAdapter?.updateData(dramas)
+                rvDramaGrid?.post {
+                    rvDramaGrid?.scrollToPosition(0)
+                }
             } else {
                 Log.w(TAG, "首頁短劇列表為空")
                 if (webScraperBridge?.isWebViewSupported == false) {
@@ -214,9 +284,66 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
+     * 點選上方橫向子分類 Tab (板塊篩選、專題推薦或熱門標籤)
+     */
+    private fun onSubTabClicked(subTab: SubTabItem) {
+        Log.i(TAG, "點擊上方子分類 Tab: ${subTab.title}, type=${subTab.type}, url=${subTab.url}")
+        when (subTab.type) {
+            SubTabItem.Type.SECTION -> {
+                if (subTab.title == "全部精選") {
+                    dramaAdapter?.updateData(allHomeDramas)
+                } else {
+                    val filtered = allHomeDramas.filter {
+                        it.section.contains(subTab.title) || it.title.contains(subTab.title)
+                    }
+                    if (filtered.isNotEmpty()) {
+                        dramaAdapter?.updateData(filtered)
+                    } else {
+                        dramaAdapter?.updateData(allHomeDramas)
+                    }
+                }
+                rvDramaGrid?.scrollToPosition(0)
+            }
+            SubTabItem.Type.TOPIC -> {
+                if (subTab.url.isNotEmpty()) {
+                    loadCategoryData(CategoryItem(subTab.id, subTab.title, subTab.url))
+                } else {
+                    val cleanKey = subTab.title.replace(Regex("\\d+部"), "").trim()
+                    val filtered = allHomeDramas.filter {
+                        it.title.contains(cleanKey) || it.section.contains(cleanKey) || it.badge.contains(cleanKey)
+                    }
+                    if (filtered.isNotEmpty()) {
+                        dramaAdapter?.updateData(filtered)
+                    } else {
+                        dramaAdapter?.updateData(allHomeDramas)
+                    }
+                    rvDramaGrid?.scrollToPosition(0)
+                }
+            }
+            SubTabItem.Type.TAG -> {
+                if (subTab.url.isNotEmpty()) {
+                    loadCategoryData(CategoryItem(subTab.id, subTab.title, subTab.url))
+                } else {
+                    val filtered = allHomeDramas.filter {
+                        it.title.contains(subTab.title) || it.tag.contains(subTab.title) || it.badge.contains(subTab.title)
+                    }
+                    if (filtered.isNotEmpty()) {
+                        dramaAdapter?.updateData(filtered)
+                    } else {
+                        Toast.makeText(this, "正在呈現【${subTab.title}】短劇", Toast.LENGTH_SHORT).show()
+                        dramaAdapter?.updateData(allHomeDramas)
+                    }
+                    rvDramaGrid?.scrollToPosition(0)
+                }
+            }
+        }
+    }
+
+    /**
      * 載入特定分類短劇清單
      */
     private fun loadCategoryData(category: CategoryItem) {
+        rvSubTabs?.visibility = View.GONE
         layoutLoading?.visibility = View.VISIBLE
         tvLoadingMsg?.text = "正在載入【${category.title}】的短劇清單..."
 

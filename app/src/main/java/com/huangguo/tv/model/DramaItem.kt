@@ -10,5 +10,7 @@ data class DramaItem(
     val title: String,
     val coverUrl: String,
     val detailUrl: String,
-    val badge: String = ""
+    val badge: String = "",
+    val section: String = "",
+    val tag: String = ""
 ) : Serializable

@@ -1,6 +1,7 @@
 package com.huangguo.tv.adapter
 
 import android.util.Log
+import android.view.KeyEvent
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -19,6 +20,8 @@ class DramaAdapter(
     private var items: List<DramaItem> = emptyList(),
     var currentBaseUrl: String = "",
     var userAgent: String = "",
+    var onKeyUpEdge: (() -> Unit)? = null,
+    var onKeyLeftEdge: (() -> Unit)? = null,
     private val onItemClick: (DramaItem) -> Unit
 ) : RecyclerView.Adapter<DramaAdapter.DramaViewHolder>() {
 
@@ -38,7 +41,15 @@ class DramaAdapter(
 
     override fun onBindViewHolder(holder: DramaViewHolder, position: Int) {
         val item = items[position]
-        holder.bind(item, currentBaseUrl, userAgent, onItemClick)
+        holder.bind(
+            item = item,
+            position = position,
+            baseUrl = currentBaseUrl,
+            ua = userAgent,
+            onKeyUpEdge = onKeyUpEdge,
+            onKeyLeftEdge = onKeyLeftEdge,
+            onClick = onItemClick
+        )
     }
 
     override fun getItemCount(): Int = items.size
@@ -65,8 +76,11 @@ class DramaAdapter(
 
         fun bind(
             item: DramaItem,
+            position: Int,
             baseUrl: String,
             ua: String,
+            onKeyUpEdge: (() -> Unit)?,
+            onKeyLeftEdge: (() -> Unit)?,
             onClick: (DramaItem) -> Unit
         ) {
             tvTitle.text = item.title
@@ -97,12 +111,28 @@ class DramaAdapter(
                             Log.d(TAG, "封面載入成功: ${item.title}")
                         },
                         onError = { _, result ->
-                            Log.e("CoilError", "圖片載入失敗: ${item.coverUrl}, 原因: ${result.throwable.message}")
+                            Log.e("CoilError", "圖片載入失敗 [${item.title}]: ${item.coverUrl}, 原因: ${result.throwable.message}", result.throwable)
                         }
                     )
                 }
             } else {
                 ivCover.setImageResource(R.drawable.dialog_bg)
+            }
+
+            itemView.setOnKeyListener { _, keyCode, event ->
+                if (event.action == KeyEvent.ACTION_DOWN) {
+                    // 第一排 (position < 4) 按上鍵回上方橫向子分類 Tab 列
+                    if (keyCode == KeyEvent.KEYCODE_DPAD_UP && position < 4) {
+                        onKeyUpEdge?.invoke()
+                        return@setOnKeyListener true
+                    }
+                    // 最左欄 (position % 4 == 0) 按左鍵回左側邊欄
+                    else if (keyCode == KeyEvent.KEYCODE_DPAD_LEFT && position % 4 == 0) {
+                        onKeyLeftEdge?.invoke()
+                        return@setOnKeyListener true
+                    }
+                }
+                false
             }
 
             itemView.setOnClickListener {

@@ -166,6 +166,20 @@
             </LinearLayout>
         </RelativeLayout>
 
+        <!-- 首頁上方橫向子分類 Tab 列 (支援遙控器左右選取與焦點切換) -->
+        <androidx.recyclerview.widget.RecyclerView
+            android:id="@+id/rvSubTabs"
+            android:layout_width="match_parent"
+            android:layout_height="40dp"
+            android:layout_marginBottom="12dp"
+            android:clipChildren="false"
+            android:clipToPadding="false"
+            android:descendantFocusability="afterDescendants"
+            android:focusable="true"
+            android:focusableInTouchMode="true"
+            android:orientation="horizontal"
+            android:visibility="visible" />
+
         <!-- 海報牆主視圖與載入指示器 -->
         <FrameLayout
             android:layout_width="match_parent"
