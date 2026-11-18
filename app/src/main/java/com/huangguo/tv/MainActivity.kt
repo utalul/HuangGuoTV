@@ -91,7 +91,12 @@ class MainActivity : AppCompatActivity() {
 
             configManager = ConfigManager.getInstance(this)
             updateManager = UpdateManager(this)
-            webScraperBridge = WebScraperBridge(this)
+            webScraperBridge = WebScraperBridge(this).apply {
+                setOnTargetUrlResolvedListener { resolvedUrl ->
+                    updateLineStatusText()
+                    showModeHint("已由發布頁自動跳轉至官方地址：$resolvedUrl")
+                }
+            }
 
             initViews()
             setupRecyclerViews()
@@ -402,20 +407,54 @@ class MainActivity : AppCompatActivity() {
         val urls = config.backupUrls
         val current = configManager.getCurrentTargetUrl()
 
-        val items = urls.toTypedArray()
-        val checkedItem = urls.indexOf(current).let { if (it >= 0) it else 0 }
+        val displayNames = urls.map { url ->
+            when {
+                url.contains("huangguoai.com") -> "$url (官方永久域名)"
+                url.contains("gitiecgad.cc") -> "$url (最新直連地址)"
+                url.contains("hgai12.com") -> "$url (最新中轉頁)"
+                url.contains("huangguoai.pages.dev") -> "$url (CF 防封發布頁 1)"
+                url.contains("huang-guo.pages.dev") -> "$url (CF 防封發布頁 2)"
+                else -> url
+            }
+        }.toTypedArray()
+
+        var selectedIndex = urls.indexOf(current).let { if (it >= 0) it else 0 }
 
         val builder = androidx.appcompat.app.AlertDialog.Builder(this, R.style.Dialog_HuangGuoTV)
         builder.setTitle("選擇播放線路")
-        builder.setSingleChoiceItems(items, checkedItem) { d, which ->
-            val selectedUrl = items[which]
-            configManager.setCurrentTargetUrl(selectedUrl)
+        builder.setSingleChoiceItems(displayNames, selectedIndex) { d, which ->
+            selectedIndex = which
+            val selectedUrl = urls[which]
+            switchLineTo(selectedUrl)
             d.dismiss()
-            showModeHint("已切換至線路: $selectedUrl")
-            loadHomeData()
+        }
+        builder.setPositiveButton("確定切換") { d, _ ->
+            val selectedUrl = urls.getOrNull(selectedIndex) ?: current
+            switchLineTo(selectedUrl)
+            d.dismiss()
         }
         builder.setNegativeButton("取消", null)
         builder.create().show()
+    }
+
+    private fun switchLineTo(selectedUrl: String) {
+        Log.i(TAG, "使用者切換線路至: $selectedUrl")
+        // 1. 立即儲存新線路
+        configManager.setCurrentTargetUrl(selectedUrl)
+
+        // 2. 立即更新左側邊欄與頂部狀態文字
+        updateLineStatusText()
+
+        // 3. 顯示正在切換至新線路提示，並清空目前清單
+        showModeHint("正在切換至新線路: $selectedUrl")
+        layoutLoading?.visibility = View.VISIBLE
+        tvLoadingMsg?.text = "正在切換至【$selectedUrl】並抓取短劇..."
+
+        allHomeDramas = emptyList()
+        dramaAdapter?.updateData(emptyList())
+
+        // 4. 立刻呼叫 webScraperBridge 重新載入該 selectedUrl 並刷新海報牆
+        loadHomeData()
     }
 
     private fun showModeHint(message: String) {

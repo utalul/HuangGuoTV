@@ -1,10 +1,12 @@
 {
-  "version": 2,
+  "version": 3,
   "primary_url": "https://huangguoai.com",
   "backup_urls": [
     "https://huangguoai.com",
-    "https://api1.huangguoju.com",
-    "https://bak.wtzxzltu.cc"
+    "https://0624.gitiecgad.cc",
+    "https://hgai12.com",
+    "https://huangguoai.pages.dev",
+    "https://huang-guo.pages.dev"
   ],
   "user_agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36 HuangGuoTV/1.0",
   "inject_css": "html, body, #app, #root, .van-theme-dark { background: #000000 !important; background-color: #000000 !important; color: #ffffff !important; overflow-x: hidden !important; } video { display: block !important; margin: 0 auto !important; max-height: 100vh !important; object-fit: contain !important; } .video-container, .player-container, .swiper-container, .video-player, [class*='player-box'], [class*='video-wrap'] { margin-left: auto !important; margin-right: auto !important; max-width: 540px !important; } [class*='download'], [class*='app-down'], [class*='download-bar'], [id*='download'], .download-box, .app-download, .open-app-banner, .footer-app, a[href*='.apk'] { display: none !important; opacity: 0 !important; pointer-events: none !important; height: 0 !important; min-height: 0 !important; padding: 0 !important; margin: 0 !important; visibility: hidden !important; } ::-webkit-scrollbar { display: none !important; width: 0px !important; } :focus, :focus-visible, a:focus, button:focus, [tabindex]:focus, div[onclick]:focus, [role='button']:focus, .van-button:focus, [class*='item']:focus { outline: 3.5px solid #FF1744 !important; outline-offset: 2px !important; box-shadow: 0 0 16px #FF1744 !important; }",

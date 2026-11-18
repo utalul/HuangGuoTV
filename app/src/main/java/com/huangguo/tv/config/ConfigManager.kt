@@ -46,7 +46,11 @@ class ConfigManager private constructor(private val context: Context) {
     fun getCurrentTargetUrl(): String {
         val saved = prefs.getString(KEY_SELECTED_URL, null)
         if (!saved.isNullOrEmpty()) {
-            return saved
+            // 若舊選取的網址是已失效的佔位網址，自動重置為官方主站
+            if (!saved.contains("wtzxzltu") && !saved.contains("huangguoju")) {
+                return saved
+            }
+            prefs.edit().remove(KEY_SELECTED_URL).apply()
         }
         return currentConfig.primaryUrl
     }
@@ -81,7 +85,13 @@ class ConfigManager private constructor(private val context: Context) {
         val cached = prefs.getString(KEY_CONFIG_JSON, null)
         if (!cached.isNullOrEmpty()) {
             try {
-                return RemoteConfig.fromJson(cached)
+                val cfg = RemoteConfig.fromJson(cached)
+                // 若舊快取的版本低於 3 或包含已失效佔位網址，清除舊快取使用最新預設配置
+                if (cfg.version >= 3 && !cfg.backupUrls.any { it.contains("wtzxzltu") || it.contains("huangguoju") }) {
+                    return cfg
+                }
+                Log.i(TAG, "偵測到舊版配置快取，升級為最新官方線路配置")
+                prefs.edit().remove(KEY_CONFIG_JSON).apply()
             } catch (e: Exception) {
                 Log.e(TAG, "解析快取配置失敗，改讀 Assets: ${e.message}")
             }

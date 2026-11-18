@@ -54,6 +54,13 @@ class WebScraperBridge(private val context: Context) {
     // 單一分類短劇抓取回呼
     private var onCategoryDramasListener: ((List<DramaItem>) -> Unit)? = null
 
+    // 發布頁跳轉真實主站成功回呼
+    private var onTargetUrlResolvedListener: ((String) -> Unit)? = null
+
+    fun setOnTargetUrlResolvedListener(listener: ((String) -> Unit)?) {
+        this.onTargetUrlResolvedListener = listener
+    }
+
     // 詳情頁與串流嗅探回呼
     private var onEpisodesLoadedListener: ((List<EpisodeItem>) -> Unit)? = null
     private var onStreamFoundListener: ((String) -> Unit)? = null
@@ -111,6 +118,25 @@ class WebScraperBridge(private val context: Context) {
             override fun onPageFinished(view: WebView?, url: String?) {
                 super.onPageFinished(view, url)
                 Log.d(TAG, "無頭頁面載入完成: $url，注入資料抓取腳本")
+
+                // 若從 .pages.dev 防封發布頁跳轉到了真實官方主站，自動同步新地址
+                if (url != null && !url.contains("pages.dev") && (url.startsWith("http://") || url.startsWith("https://"))) {
+                    try {
+                        val uri = android.net.Uri.parse(url)
+                        val resolvedHost = "${uri.scheme}://${uri.host}"
+                        val currentTarget = configManager.getCurrentTargetUrl()
+                        if (currentTarget.contains("pages.dev") && resolvedHost.isNotEmpty() && resolvedHost != currentTarget) {
+                            Log.i(TAG, "成功由發布頁跳轉至真實目標主站: $resolvedHost")
+                            configManager.setCurrentTargetUrl(resolvedHost)
+                            mainHandler.post {
+                                onTargetUrlResolvedListener?.invoke(resolvedHost)
+                            }
+                        }
+                    } catch (e: Exception) {
+                        Log.w(TAG, "解析發布頁跳轉網址異常: ${e.message}")
+                    }
+                }
+
                 injectDataScrapingScript(wv)
             }
         }
@@ -263,6 +289,7 @@ class WebScraperBridge(private val context: Context) {
                     return@post
                 }
                 startHomeTimeout()
+                homeWebView?.stopLoading()
                 homeWebView?.loadUrl(url) ?: run {
                     cancelHomeTimeout()
                     callback(emptyList(), emptyList(), emptyList())
@@ -409,6 +436,25 @@ class WebScraperBridge(private val context: Context) {
                     }
                 }
                 autoClickAge();
+
+                // 若為 .pages.dev 防封發布頁，立即掃描跳轉至頁內最新官方主站地址
+                if (location.hostname.indexOf('pages.dev') !== -1) {
+                    var publishLinks = document.querySelectorAll('a, button, [role="button"], div');
+                    var foundRealUrl = '';
+                    for (var pl = 0; pl < publishLinks.length; pl++) {
+                        var pEl = publishLinks[pl];
+                        var pHref = (pEl.tagName.toUpperCase() === 'A') ? pEl.href : '';
+                        if (pHref && pHref.indexOf('http') === 0 && pHref.indexOf('pages.dev') === -1) {
+                            foundRealUrl = pHref;
+                            break;
+                        }
+                    }
+                    if (foundRealUrl) {
+                        console.log('由發布頁解析到最新官網地址: ' + foundRealUrl);
+                        location.href = foundRealUrl;
+                        return;
+                    }
+                }
 
                 // 1. 多段式自動滾動，確保懶載入的「精選推薦」、「最近上新」、「熱播短劇」板塊全數渲染
                 var scrollCount = 0;
@@ -845,12 +891,6 @@ class WebScraperBridge(private val context: Context) {
                 }
             })();
         """.trimIndent()
-        try {
-            wv.evaluateJavascript(js, null)
-        } catch (t: Throwable) {
-            Log.e(TAG, "evaluateJavascript 異常: ${t.message}")
-        }
-    }
         try {
             wv.evaluateJavascript(js, null)
         } catch (t: Throwable) {

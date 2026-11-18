@@ -7,12 +7,14 @@ import org.json.JSONObject
  * 遠端與本地雲端配置資料模型
  */
 data class RemoteConfig(
-    val version: Int = 1,
+    val version: Int = 3,
     val primaryUrl: String = "https://huangguoai.com",
     val backupUrls: List<String> = listOf(
         "https://huangguoai.com",
-        "https://api1.huangguoju.com",
-        "https://bak.wtzxzltu.cc"
+        "https://0624.gitiecgad.cc",
+        "https://hgai12.com",
+        "https://huangguoai.pages.dev",
+        "https://huang-guo.pages.dev"
     ),
     val userAgent: String = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36 HuangGuoTV/1.0",
     val injectCss: String = "",
@@ -27,11 +29,23 @@ data class RemoteConfig(
             if (obj.has("backup_urls")) {
                 val arr = obj.getJSONArray("backup_urls")
                 for (i in 0 until arr.length()) {
-                    backupList.add(arr.getString(i))
+                    val u = arr.getString(i).trim()
+                    // 自動過濾已失效的舊佔位網址
+                    if (u.isNotEmpty() && !u.contains("wtzxzltu") && !u.contains("huangguoju")) {
+                        backupList.add(u)
+                    }
                 }
             }
-            if (backupList.isEmpty() && obj.has("primary_url")) {
-                backupList.add(obj.optString("primary_url", "https://huangguoai.com"))
+            if (backupList.isEmpty()) {
+                backupList.addAll(
+                    listOf(
+                        "https://huangguoai.com",
+                        "https://0624.gitiecgad.cc",
+                        "https://hgai12.com",
+                        "https://huangguoai.pages.dev",
+                        "https://huang-guo.pages.dev"
+                    )
+                )
             }
 
             var repo = obj.optString("github_repo", "mustresource/HuangGuoTV")
@@ -47,13 +61,10 @@ data class RemoteConfig(
             }
 
             return RemoteConfig(
-                version = obj.optInt("version", 1),
+                version = obj.optInt("version", 3),
                 primaryUrl = obj.optString("primary_url", "https://huangguoai.com"),
                 backupUrls = backupList,
-                userAgent = obj.optString(
-                    "user_agent",
-                    "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36 HuangGuoTV/1.0"
-                ),
+                userAgent = obj.optString("user_agent", "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36 HuangGuoTV/1.0"),
                 injectCss = obj.optString("inject_css", ""),
                 injectJs = obj.optString("inject_js", ""),
                 githubRepo = repo,
