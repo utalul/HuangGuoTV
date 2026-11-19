@@ -245,6 +245,7 @@ class PlayerActivity : AppCompatActivity() {
      */
     private fun startLoadingDrama() {
         val drama = currentDrama ?: return
+        Log.i(TAG, "點擊海報開始嗅探: title=${drama.title}, detailUrl=${drama.detailUrl}")
         layoutPlayerLoading.visibility = View.VISIBLE
         tvPlayerLoadingStatus.text = "正在嗅探真實影片串流，請稍候..."
 

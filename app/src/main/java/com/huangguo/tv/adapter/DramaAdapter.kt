@@ -15,6 +15,7 @@ import com.huangguo.tv.model.DramaItem
 /**
  * 原生 Android TV 海報牆適配器
  * 支援 Coil 防盜鏈 Header 注入 (Referer, User-Agent) 與詳細除錯日誌
+ * 支援 Base64 (data:image/jpeg;base64,...) 封面圖原生解碼
  */
 class DramaAdapter(
     private var items: List<DramaItem> = emptyList(),
@@ -98,12 +99,14 @@ class DramaAdapter(
                     placeholder(R.drawable.dialog_bg)
                     error(R.drawable.dialog_bg)
 
-                    // 穿透防盜鏈
-                    if (baseUrl.isNotEmpty()) {
-                        addHeader("Referer", baseUrl)
-                    }
-                    if (ua.isNotEmpty()) {
-                        addHeader("User-Agent", ua)
+                    // 僅對非 Base64 的 HTTP 網址注入 Referer 與 User-Agent 防盜鏈 Header
+                    if (!item.coverUrl.startsWith("data:")) {
+                        if (baseUrl.isNotEmpty()) {
+                            addHeader("Referer", baseUrl)
+                        }
+                        if (ua.isNotEmpty()) {
+                            addHeader("User-Agent", ua)
+                        }
                     }
 
                     listener(
@@ -111,7 +114,8 @@ class DramaAdapter(
                             Log.d(TAG, "封面載入成功: ${item.title}")
                         },
                         onError = { _, result ->
-                            Log.e("CoilError", "圖片載入失敗 [${item.title}]: ${item.coverUrl}, 原因: ${result.throwable.message}", result.throwable)
+                            val shortUrl = if (item.coverUrl.length > 60) item.coverUrl.take(60) + "..." else item.coverUrl
+                            Log.e("CoilError", "圖片載入失敗 [${item.title}]: $shortUrl, 原因: ${result.throwable.message}")
                         }
                     )
                 }

@@ -44,6 +44,37 @@ class MainActivity : AppCompatActivity() {
         private const val TAG = "HuangGuoTV_Main"
         private const val EXIT_INTERVAL = 2000L
         private const val SPAN_COUNT = 4 // 右側海報牆 4 欄
+
+        // 預設首頁頂部橫向子分類（四大板塊 + 三大專題推薦 + 二十個熱門標籤）
+        val DEFAULT_SUB_TABS = listOf(
+            SubTabItem("tab_all", "全部精選", "", SubTabItem.Type.SECTION),
+            SubTabItem("tab_featured", "精選推薦", "", SubTabItem.Type.SECTION),
+            SubTabItem("tab_latest", "最近上新", "", SubTabItem.Type.SECTION),
+            SubTabItem("tab_hot", "熱播短劇", "", SubTabItem.Type.SECTION),
+            SubTabItem("tab_topic_81", "81部精品高分", "", SubTabItem.Type.TOPIC),
+            SubTabItem("tab_topic_68", "68部家庭倫理", "", SubTabItem.Type.TOPIC),
+            SubTabItem("tab_topic_100", "100部天菜男同", "", SubTabItem.Type.TOPIC),
+            SubTabItem("tab_tag_city", "都市", "", SubTabItem.Type.TAG),
+            SubTabItem("tab_tag_gufeng", "古風", "", SubTabItem.Type.TAG),
+            SubTabItem("tab_tag_fantasy", "奇幻", "", SubTabItem.Type.TAG),
+            SubTabItem("tab_tag_modern", "現代", "", SubTabItem.Type.TAG),
+            SubTabItem("tab_tag_work", "職場", "", SubTabItem.Type.TAG),
+            SubTabItem("tab_tag_counter", "逆襲", "", SubTabItem.Type.TAG),
+            SubTabItem("tab_tag_campus", "校園", "", SubTabItem.Type.TAG),
+            SubTabItem("tab_tag_green", "綠帽", "", SubTabItem.Type.TAG),
+            SubTabItem("tab_tag_mature", "熟女", "", SubTabItem.Type.TAG),
+            SubTabItem("tab_tag_mother", "母子", "", SubTabItem.Type.TAG),
+            SubTabItem("tab_tag_incest", "亂倫", "", SubTabItem.Type.TAG),
+            SubTabItem("tab_tag_system", "系統", "", SubTabItem.Type.TAG),
+            SubTabItem("tab_tag_xianxia", "仙俠", "", SubTabItem.Type.TAG),
+            SubTabItem("tab_tag_harem", "后宮", "", SubTabItem.Type.TAG),
+            SubTabItem("tab_tag_hero", "大男主", "", SubTabItem.Type.TAG),
+            SubTabItem("tab_tag_gender", "性轉", "", SubTabItem.Type.TAG),
+            SubTabItem("tab_tag_hole", "腦洞", "", SubTabItem.Type.TAG),
+            SubTabItem("tab_tag_suspense", "懸疑", "", SubTabItem.Type.TAG),
+            SubTabItem("tab_tag_ntr", "NTR", "", SubTabItem.Type.TAG),
+            SubTabItem("tab_tag_wuxia", "武俠", "", SubTabItem.Type.TAG)
+        )
     }
 
     // 左側邊欄
@@ -198,6 +229,8 @@ class MainActivity : AppCompatActivity() {
             onSubTabClicked(subTab)
         }
         rvSubTabs?.adapter = subTabAdapter
+        subTabAdapter?.updateData(DEFAULT_SUB_TABS, defaultSelected = 0)
+        rvSubTabs?.visibility = View.VISIBLE
 
         // 3. 右側短劇海報網格 (4 欄佈局)
         val gridLayoutManager = GridLayoutManager(this, SPAN_COUNT)
@@ -265,10 +298,20 @@ class MainActivity : AppCompatActivity() {
                 }
             }
 
-            if (subTabs.isNotEmpty()) {
-                rvSubTabs?.visibility = View.VISIBLE
-                subTabAdapter?.updateData(subTabs, defaultSelected = 0)
+            val mergedSubTabs = if (subTabs.isNotEmpty()) {
+                val list = subTabs.toMutableList()
+                val existingTitles = subTabs.map { it.title }.toSet()
+                for (defaultTab in DEFAULT_SUB_TABS) {
+                    if (!existingTitles.contains(defaultTab.title)) {
+                        list.add(defaultTab)
+                    }
+                }
+                list
+            } else {
+                DEFAULT_SUB_TABS
             }
+            rvSubTabs?.visibility = View.VISIBLE
+            subTabAdapter?.updateData(mergedSubTabs, defaultSelected = 0)
 
             if (dramas.isNotEmpty()) {
                 Log.i(TAG, "首頁短劇抓取成功，共 ${dramas.size} 部")
@@ -319,10 +362,10 @@ class MainActivity : AppCompatActivity() {
                     }
                     if (filtered.isNotEmpty()) {
                         dramaAdapter?.updateData(filtered)
+                        rvDramaGrid?.scrollToPosition(0)
                     } else {
-                        dramaAdapter?.updateData(allHomeDramas)
+                        loadTagOrKeywordOnline(subTab.title)
                     }
-                    rvDramaGrid?.scrollToPosition(0)
                 }
             }
             SubTabItem.Type.TAG -> {
@@ -334,12 +377,30 @@ class MainActivity : AppCompatActivity() {
                     }
                     if (filtered.isNotEmpty()) {
                         dramaAdapter?.updateData(filtered)
+                        rvDramaGrid?.scrollToPosition(0)
                     } else {
-                        Toast.makeText(this, "正在呈現【${subTab.title}】短劇", Toast.LENGTH_SHORT).show()
-                        dramaAdapter?.updateData(allHomeDramas)
+                        loadTagOrKeywordOnline(subTab.title)
                     }
-                    rvDramaGrid?.scrollToPosition(0)
                 }
+            }
+        }
+    }
+
+    /**
+     * 本地快取無匹配時，透過無頭 WebView 點擊網頁上的分類/標籤或跳轉加載對應分類頁
+     */
+    private fun loadTagOrKeywordOnline(keyword: String) {
+        layoutLoading?.visibility = View.VISIBLE
+        tvLoadingMsg?.text = "正在載入【${keyword}】相關短劇..."
+        webScraperBridge?.clickNavOrTag(keyword) { dramas ->
+            layoutLoading?.visibility = View.GONE
+            if (dramas.isNotEmpty()) {
+                dramaAdapter?.updateData(dramas)
+                rvDramaGrid?.scrollToPosition(0)
+            } else {
+                Toast.makeText(this, "未找到【${keyword}】專屬劇集，顯示精選短劇", Toast.LENGTH_SHORT).show()
+                dramaAdapter?.updateData(allHomeDramas)
+                rvDramaGrid?.scrollToPosition(0)
             }
         }
     }
@@ -372,6 +433,7 @@ class MainActivity : AppCompatActivity() {
      * 開啟全螢幕播放器
      */
     private fun openPlayer(drama: DramaItem) {
+        Log.i(TAG, "點擊短劇卡片: [${drama.title}], detailUrl=${drama.detailUrl}")
         try {
             val intent = Intent(this, PlayerActivity::class.java).apply {
                 putExtra(PlayerActivity.EXTRA_DRAMA, drama)
