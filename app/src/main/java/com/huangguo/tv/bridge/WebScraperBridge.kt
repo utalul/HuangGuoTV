@@ -27,8 +27,8 @@ import org.json.JSONObject
  * 針對 32 位元低記憶體 Android TV 進行深度優化：
  * 1. 延遲初始化 (Lazy Init)：按需建立 WebView，避免同時駐留多個實例引起 OOM。
  * 2. 15 秒超時保護 (Timeout)：避免因伺服器無響應或 DOM 異常導致 Loading 卡死。
- * 3. 離屏 Canvas 轉 Base64：克服加密圖床與防盜鏈，直接由 WebView 渲染像素導出。
- * 4. DOM <video> 直連網址嗅探與高頻輪巡點擊播放。
+ * 3. 徹底移除 Canvas 轉檔，直接提取原始圖片絕對網址交由 Coil 配合寬鬆 SSL 載入，杜絕跨網域 SecurityError。
+ * 4. DOM <video> 直連網址嗅探與高頻輪巡自動點擊播放按鈕。
  */
 class WebScraperBridge(private val context: Context) {
 
@@ -86,12 +86,6 @@ class WebScraperBridge(private val context: Context) {
                 settings.allowContentAccess = true
                 settings.cacheMode = WebSettings.LOAD_DEFAULT
                 settings.mediaPlaybackRequiresUserGesture = false
-
-                // 允許跨來源存取，協助 Canvas 讀取圖片導出 Base64
-                try {
-                    settings.allowFileAccessFromFileURLs = true
-                    settings.allowUniversalAccessFromFileURLs = true
-                } catch (e: Exception) {}
 
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
                     settings.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
@@ -462,11 +456,12 @@ class WebScraperBridge(private val context: Context) {
 
     /**
      * 注入首頁與分類抓取核心 JS
-     * 支援：
-     * 1. 4 次多段滾動 (每 450ms 滾動 window.innerHeight) 觸發懶載入完整 DOM
-     * 2. 滾動後等待 800ms 確保圖片解碼，利用離屏 Canvas (240px) 轉 Base64 穿透防盜鏈
-     * 3. 嚴格過濾播放量 (236.4w / 550.8w 等) 避免誤抓為劇名，將播放量轉為角標
-     * 4. 向上與向下智慧解析真實 detailUrl，杜絕空值或 # 連結
+     * 規格要求：
+     * 1. 徹底移除 Canvas 轉檔與 toDataURL()，直接提取原始圖片絕對網址交由 Coil 配合寬鬆 SSL 載入。
+     * 2. 卡片掃描迴圈中每張卡片皆包覆 try-catch，防止單一 DOM 元素錯誤中斷整批回傳。
+     * 3. 嚴格過濾播放量數字 (236.4w / 550.8w 等) 避免誤抓為劇名，將播放量轉存為角標 badge。
+     * 4. 雙向智慧解析真實 detailUrl，排除 #、javascript:、.apk 下載連結。
+     * 5. 滾動 3~4 次確保懶載入各區塊劇集完整呈現。
      */
     private fun injectDataScrapingScript(wv: WebView) {
         val js = """
@@ -527,9 +522,9 @@ class WebScraperBridge(private val context: Context) {
                         clearInterval(scrollInterval);
                         setTimeout(function() {
                             doFullScrape();
-                        }, 800);
+                        }, 500);
                     }
-                }, 450);
+                }, 400);
 
                 window.doFullScrape = doFullScrape;
 
@@ -568,11 +563,11 @@ class WebScraperBridge(private val context: Context) {
                     function isViewCountOrMetaText(str) {
                         if (!str) return false;
                         var s = str.trim();
-                        if (/^d+(.d+)?[wWkK万萬億亿]?s*(次?播放|熱度|热度|人看過|人看过|次)?$/i.test(s)) return true;
-                        if (/^(熱度|热度|播放|點擊|点击)s*[:：]?s*d+(.d+)?[wWkK万萬]?$/i.test(s)) return true;
-                        if (/^d+(.d+)?[wWkK万萬]?$/i.test(s)) return true;
-                        if (/^[0-9.:-s]+$/.test(s)) return true;
-                        if (/^TOPs*d+/i.test(s)) return true;
+                        if (/^\d+(\.\d+)?[wWkK万萬億亿]?\s*(次?播放|熱度|热度|人看過|人看过|次)?$/i.test(s)) return true;
+                        if (/^(熱度|热度|播放|點擊|点击)\s*[:：]?\s*\d+(\.\d+)?[wWkK万萬]?$/i.test(s)) return true;
+                        if (/^\d+(\.\d+)?[wWkK万萬]?$/i.test(s)) return true;
+                        if (/^[0-9\.\:\-\s]+$/.test(s)) return true;
+                        if (/^TOP\s*\d+/i.test(s)) return true;
                         return false;
                     }
 
@@ -589,48 +584,26 @@ class WebScraperBridge(private val context: Context) {
 
                     function isValidImageUrl(url) {
                         if (!url) return false;
-                        var lower = url.toLowerCase();
-                        if (lower.indexOf('data:image') === 0 && lower.indexOf('base64') !== -1 && lower.length < 200) return false;
+                        var lower = url.toLowerCase().trim();
+                        if (lower.indexOf('javascript') === 0) return false;
                         if (lower.indexOf('logo') !== -1 || lower.indexOf('avatar') !== -1 || lower.indexOf('icon') !== -1) return false;
+                        if (lower.indexOf('.svg') !== -1) return false;
                         return true;
-                    }
-
-                    // 將已載入的 img 元素繪製到 240px 離屏 Canvas 並輸出 Base64
-                    function extractCanvasBase64(imgEl) {
-                        if (!imgEl) return '';
-                        try {
-                            var nw = imgEl.naturalWidth || imgEl.width || 0;
-                            var nh = imgEl.naturalHeight || imgEl.height || 0;
-                            if (nw <= 0 || nh <= 0) return '';
-                            var targetW = 240;
-                            var targetH = Math.round((nh / nw) * targetW);
-                            if (targetH <= 0 || isNaN(targetH)) targetH = 340;
-                            var canvas = document.createElement('canvas');
-                            canvas.width = targetW;
-                            canvas.height = targetH;
-                            var ctx = canvas.getContext('2d');
-                            ctx.drawImage(imgEl, 0, 0, targetW, targetH);
-                            var dataUrl = canvas.toDataURL('image/jpeg', 0.75);
-                            if (dataUrl && dataUrl.length > 200) {
-                                return dataUrl;
-                            }
-                        } catch(e) {}
-                        return '';
                     }
 
                     function extractBackgroundImage(el) {
                         if (!el) return '';
                         var candidates = [el];
                         if (el.parentElement) candidates.push(el.parentElement);
-                        var children = el.querySelectorAll('div, span, a, section, i');
+                        var children = el.querySelectorAll ? el.querySelectorAll('div, span, a, section, i') : [];
                         for (var c = 0; c < Math.min(children.length, 6); c++) {
                             candidates.push(children[c]);
                         }
                         for (var i = 0; i < candidates.length; i++) {
                             var target = candidates[i];
-                            var bg = target.style.backgroundImage || window.getComputedStyle(target).backgroundImage || '';
+                            var bg = target.style.backgroundImage || (window.getComputedStyle ? window.getComputedStyle(target).backgroundImage : '') || '';
                             if (bg && bg !== 'none') {
-                                var match = bg.match(/url(["']?([^"')]+)["']?)/);
+                                var match = bg.match(/url\(['"]?([^'"]+)['"]?\)/);
                                 if (match && match[1] && isValidImageUrl(match[1])) {
                                     return toAbsoluteUrl(match[1]);
                                 }
@@ -639,46 +612,27 @@ class WebScraperBridge(private val context: Context) {
                         return '';
                     }
 
+                    // 直接提取原始圖片絕對網址，徹底移除 Canvas 轉檔以杜絕 SecurityError
                     function extractCoverFromElement(card) {
-                        // 1. 若卡片內本身就包含現成 canvas（JS 解密直接畫在 canvas 上）
-                        var canvasEl = card.querySelector('canvas');
-                        if (canvasEl) {
-                            try {
-                                var cData = canvasEl.toDataURL('image/jpeg', 0.75);
-                                if (cData && cData.length > 200) return cData;
-                            } catch(e) {}
-                        }
-
-                        // 2. 查找 img 標籤
                         var img = card.querySelector('img');
                         if (img) {
-                            // 若圖片已解密或渲染完畢，嘗試轉成 Base64
-                            var b64 = extractCanvasBase64(img);
-                            if (b64) return b64;
-
-                            // 若圖片 src 本身已經是 data:image
-                            var rawSrc = img.currentSrc || img.src || '';
-                            if (rawSrc && rawSrc.indexOf('data:image') === 0 && rawSrc.length > 200) return rawSrc;
-
-                            var attrSrc = img.getAttribute('data-src') ||
-                                          img.getAttribute('data-original') ||
-                                          img.getAttribute('data-lazy-src') ||
-                                          img.getAttribute('data-background') ||
-                                          img.getAttribute('data-srcset') || '';
-                            if (attrSrc) {
-                                if (attrSrc.indexOf(',') !== -1) {
-                                    var parts = attrSrc.split(',');
-                                    attrSrc = parts[parts.length - 1].trim().split(' ')[0];
+                            var rawSrc = img.getAttribute('data-src') ||
+                                         img.getAttribute('data-original') ||
+                                         img.getAttribute('data-lazy-src') ||
+                                         img.getAttribute('data-background') ||
+                                         img.getAttribute('data-srcset') ||
+                                         img.currentSrc ||
+                                         img.src || '';
+                            if (rawSrc) {
+                                if (rawSrc.indexOf(',') !== -1) {
+                                    var parts = rawSrc.split(',');
+                                    rawSrc = parts[parts.length - 1].trim().split(' ')[0];
                                 }
-                                if (isValidImageUrl(attrSrc)) return toAbsoluteUrl(attrSrc);
-                            }
-
-                            if (rawSrc && isValidImageUrl(rawSrc)) {
-                                return toAbsoluteUrl(rawSrc);
+                                if (isValidImageUrl(rawSrc)) {
+                                    return toAbsoluteUrl(rawSrc);
+                                }
                             }
                         }
-
-                        // 3. 查找背景圖片
                         return extractBackgroundImage(card);
                     }
 
@@ -699,7 +653,7 @@ class WebScraperBridge(private val context: Context) {
                             if (lower.indexOf('play') !== -1 || lower.indexOf('video') !== -1 ||
                                 lower.indexOf('detail') !== -1 || lower.indexOf('vod') !== -1 ||
                                 lower.indexOf('drama') !== -1 || lower.indexOf('item') !== -1 ||
-                                /d+/.test(path) || path.indexOf('.html') !== -1) {
+                                /\d+/.test(path) || path.indexOf('.html') !== -1) {
                                 return true;
                             }
                             var segments = path.split('/').filter(Boolean);
@@ -738,14 +692,14 @@ class WebScraperBridge(private val context: Context) {
 
                     function hasEpisodeBadge(badge) {
                         if (!badge) return false;
-                        return /更新至s*d+s*集/.test(badge) ||
-                               /全s*d+s*集/.test(badge) ||
+                        return /更新至\s*\d+\s*集/.test(badge) ||
+                               /全\s*\d+\s*集/.test(badge) ||
                                badge.indexOf('集') !== -1 ||
                                badge.indexOf('完結') !== -1 ||
                                badge.indexOf('完结') !== -1 ||
                                badge.indexOf('更新') !== -1 ||
-                               /^d+(.d+)?[wWkK万萬]/.test(badge) ||
-                               /^TOPs*d+/i.test(badge);
+                               /^\d+(\.\d+)?[wWkK万萬]/.test(badge) ||
+                               /^TOP\s*\d+/i.test(badge);
                     }
 
                     // A. 左側邊欄一級大分類（首頁推薦、黃果原創、短劇、漫劇、專題、排行榜、博客、黑料吃瓜）
@@ -812,8 +766,7 @@ class WebScraperBridge(private val context: Context) {
                         var tEl = topicElements[t];
                         var tText = (tEl.innerText || tEl.textContent || '').trim();
                         if (!tText || isBlacklisted(tText)) continue;
-                        var matchCount = tText.match(/(d+)s*部([^
-]+)/);
+                        var matchCount = tText.match(/(\d+)\s*部([^\n\r]+)/);
                         if (matchCount) {
                             var tLink = (tEl.tagName.toUpperCase() === 'A') ? tEl.href : (tEl.querySelector('a') ? tEl.querySelector('a').href : '');
                             tLink = toAbsoluteUrl(tLink);
@@ -915,124 +868,128 @@ class WebScraperBridge(private val context: Context) {
                     );
 
                     for (var c = 0; c < cards.length; c++) {
-                        var card = cards[c];
-                        var cardText = (card.innerText || card.textContent || '').trim();
+                        try {
+                            var card = cards[c];
+                            var cardText = (card.innerText || card.textContent || '').trim();
 
-                        if (isBlacklisted(cardText)) continue;
-                        if (/(d+)s*部[劇剧]集/.test(cardText) || /共s*(d+)s*部/.test(cardText)) continue;
+                            if (isBlacklisted(cardText)) continue;
+                            if (/(\d+)\s*部[劇剧]集/.test(cardText) || /共\s*(\d+)\s*部/.test(cardText)) continue;
 
-                        var href = extractValidLink(card);
-                        if (!href) continue;
-                        href = toAbsoluteUrl(href);
-                        if (!href || isBlacklisted(href)) continue;
+                            var href = extractValidLink(card);
+                            if (!href) continue;
+                            href = toAbsoluteUrl(href);
+                            if (!href || isBlacklisted(href)) continue;
 
-                        var cover = extractCoverFromElement(card);
-                        var title = '';
-                        var badge = '';
+                            var cover = extractCoverFromElement(card);
+                            var title = '';
+                            var badge = '';
 
-                        var primaryTitles = [];
-                        var aTag = (card.tagName.toUpperCase() === 'A') ? card : card.querySelector('a');
-                        if (aTag) {
-                            var aTitle = (aTag.getAttribute('title') || '').trim();
-                            if (aTitle && !isBlacklisted(aTitle) && !isViewCountOrMetaText(aTitle) && aTitle.length >= 2) {
-                                primaryTitles.push({ text: aTitle, weight: 100 });
-                            }
-                        }
-                        var imgEl = card.querySelector('img');
-                        if (imgEl) {
-                            var alt = (imgEl.getAttribute('alt') || '').trim();
-                            if (alt && !isBlacklisted(alt) && !isViewCountOrMetaText(alt) && alt.length >= 2) {
-                                primaryTitles.push({ text: alt, weight: 90 });
-                            }
-                        }
-
-                        var textNodes = card.querySelectorAll(
-                            '.title, [class*="title"], [class*="name"], h1, h2, h3, h4, p, span, div'
-                        );
-
-                        for (var tn = 0; tn < textNodes.length; tn++) {
-                            var el = textNodes[tn];
-                            if (el.children.length > 2) continue;
-                            var t = (el.innerText || el.textContent || '').trim();
-                            if (!t || isBlacklisted(t)) continue;
-
-                            if (/更新至s*d+s*集/.test(t) || /全s*d+s*集/.test(t) || t === '完結' || t === '完结') {
-                                if (!badge) badge = t;
-                                continue;
-                            }
-
-                            // 排除播放量/熱度/純數字，並將播放量留存為角標
-                            if (isViewCountOrMetaText(t)) {
-                                if (!badge && /d/.test(t)) {
-                                    badge = t;
+                            var primaryTitles = [];
+                            var aTag = (card.tagName.toUpperCase() === 'A') ? card : card.querySelector('a');
+                            if (aTag) {
+                                var aTitle = (aTag.getAttribute('title') || '').trim();
+                                if (aTitle && !isBlacklisted(aTitle) && !isViewCountOrMetaText(aTitle) && aTitle.length >= 2) {
+                                    primaryTitles.push({ text: aTitle, weight: 100 });
                                 }
-                                continue;
+                            }
+                            var imgEl = card.querySelector('img');
+                            if (imgEl) {
+                                var alt = (imgEl.getAttribute('alt') || '').trim();
+                                if (alt && !isBlacklisted(alt) && !isViewCountOrMetaText(alt) && alt.length >= 2) {
+                                    primaryTitles.push({ text: alt, weight: 90 });
+                                }
                             }
 
-                            if (t === '立即播放' || t === '立即观看' || t === '播放' || t === '观看' || t === '進入網站' || t === '进入网站') {
-                                continue;
+                            var textNodes = card.querySelectorAll(
+                                '.title, [class*="title"], [class*="name"], h1, h2, h3, h4, p, span, div'
+                            );
+
+                            for (var tn = 0; tn < textNodes.length; tn++) {
+                                var el = textNodes[tn];
+                                if (el.children.length > 2) continue;
+                                var t = (el.innerText || el.textContent || '').trim();
+                                if (!t || isBlacklisted(t)) continue;
+
+                                if (/更新至\s*\d+\s*集/.test(t) || /全\s*\d+\s*集/.test(t) || t === '完結' || t === '完结') {
+                                    if (!badge) badge = t;
+                                    continue;
+                                }
+
+                                // 排除播放量/熱度/純數字，並將播放量留存為角標
+                                if (isViewCountOrMetaText(t)) {
+                                    if (!badge && /\d/.test(t)) {
+                                        badge = t;
+                                    }
+                                    continue;
+                                }
+
+                                if (t === '立即播放' || t === '立即观看' || t === '播放' || t === '观看' || t === '進入網站' || t === '进入网站') {
+                                    continue;
+                                }
+
+                                var weight = 10;
+                                var cls = (el.className || '') + ' ' + (el.parentElement ? el.parentElement.className : '');
+                                var tag = el.tagName.toUpperCase();
+                                if (cls.indexOf('title') !== -1 || cls.indexOf('name') !== -1) weight += 50;
+                                if (tag === 'H1' || tag === 'H2' || tag === 'H3' || tag === 'H4') weight += 40;
+                                if (/[《【]/.test(t)) weight += 30;
+                                if (/[一-龥]/.test(t)) weight += 20;
+
+                                primaryTitles.push({ text: t, weight: weight });
                             }
 
-                            var weight = 10;
-                            var cls = (el.className || '') + ' ' + (el.parentElement ? el.parentElement.className : '');
-                            var tag = el.tagName.toUpperCase();
-                            if (cls.indexOf('title') !== -1 || cls.indexOf('name') !== -1) weight += 50;
-                            if (tag === 'H1' || tag === 'H2' || tag === 'H3' || tag === 'H4') weight += 40;
-                            if (/[《【]/.test(t)) weight += 30;
-                            if (/[一-龥]/.test(t)) weight += 20;
+                            primaryTitles.sort(function(a, b) {
+                                if (b.weight !== a.weight) return b.weight - a.weight;
+                                return b.text.length - a.text.length;
+                            });
 
-                            primaryTitles.push({ text: t, weight: weight });
-                        }
+                            if (primaryTitles.length > 0) {
+                                title = primaryTitles[0].text;
+                            }
 
-                        primaryTitles.sort(function(a, b) {
-                            if (b.weight !== a.weight) return b.weight - a.weight;
-                            return b.text.length - a.text.length;
-                        });
+                            if (!title || /^\d+$/.test(title)) continue;
+                            if (isStrictDramaTitleBlacklisted(title)) continue;
 
-                        if (primaryTitles.length > 0) {
-                            title = primaryTitles[0].text;
-                        }
+                            var cleanedTitle = title.replace(/[《》【】\[\]\(\)\s\-\_]/g, '').trim();
+                            if (cleanedTitle.length < 2) continue;
 
-                        if (!title || /^d+$/.test(title)) continue;
-                        if (isStrictDramaTitleBlacklisted(title)) continue;
+                            var badgeValid = hasEpisodeBadge(badge);
+                            var urlValid = isValidDramaUrl(href);
+                            if (!badgeValid && !urlValid) continue;
 
-                        var cleanedTitle = title.replace(/[《》【】[]()s-_]/g, '').trim();
-                        if (cleanedTitle.length < 2) continue;
+                            var section = detectSection(card, c, cards.length);
+                            var dramaTag = detectTag(cardText + ' ' + title);
 
-                        var badgeValid = hasEpisodeBadge(badge);
-                        var urlValid = isValidDramaUrl(href);
-                        if (!badgeValid && !urlValid) continue;
+                            var normalizedKey = cleanedTitle.toLowerCase();
+                            var score = 0;
+                            var lowerHref = href.toLowerCase();
+                            if (lowerHref.indexOf('play') !== -1 || lowerHref.indexOf('video') !== -1) score += 100;
+                            if (lowerHref.indexOf('detail') !== -1 || lowerHref.indexOf('vod') !== -1) score += 50;
+                            if (/\d+/.test(lowerHref)) score += 20;
+                            if (cover) score += 15;
+                            if (badgeValid) score += 10;
 
-                        var section = detectSection(card, c, cards.length);
-                        var dramaTag = detectTag(cardText + ' ' + title);
+                            if (!dramaMap[normalizedKey] || score > dramaMap[normalizedKey].score) {
+                                var finalCover = cover || (dramaMap[normalizedKey] ? dramaMap[normalizedKey].item.coverUrl : '');
+                                var finalBadge = badge || (dramaMap[normalizedKey] ? dramaMap[normalizedKey].item.badge : '');
+                                var finalSection = section || (dramaMap[normalizedKey] ? dramaMap[normalizedKey].item.section : '');
+                                var finalTag = dramaTag || (dramaMap[normalizedKey] ? dramaMap[normalizedKey].item.tag : '');
 
-                        var normalizedKey = cleanedTitle.toLowerCase();
-                        var score = 0;
-                        var lowerHref = href.toLowerCase();
-                        if (lowerHref.indexOf('play') !== -1 || lowerHref.indexOf('video') !== -1) score += 100;
-                        if (lowerHref.indexOf('detail') !== -1 || lowerHref.indexOf('vod') !== -1) score += 50;
-                        if (/\d+/.test(lowerHref)) score += 20;
-                        if (cover) score += 15;
-                        if (badgeValid) score += 10;
-
-                        if (!dramaMap[normalizedKey] || score > dramaMap[normalizedKey].score) {
-                            var finalCover = cover || (dramaMap[normalizedKey] ? dramaMap[normalizedKey].item.coverUrl : '');
-                            var finalBadge = badge || (dramaMap[normalizedKey] ? dramaMap[normalizedKey].item.badge : '');
-                            var finalSection = section || (dramaMap[normalizedKey] ? dramaMap[normalizedKey].item.section : '');
-                            var finalTag = dramaTag || (dramaMap[normalizedKey] ? dramaMap[normalizedKey].item.tag : '');
-
-                            dramaMap[normalizedKey] = {
-                                item: {
-                                    id: 'drama_' + (dramaIndex++),
-                                    title: title.replace(/\n+/g, ' ').substring(0, 40),
-                                    coverUrl: finalCover,
-                                    detailUrl: href,
-                                    badge: finalBadge,
-                                    section: finalSection,
-                                    tag: finalTag
-                                },
-                                score: score
-                            };
+                                dramaMap[normalizedKey] = {
+                                    item: {
+                                        id: 'drama_' + (dramaIndex++),
+                                        title: title.replace(/\n+/g, ' ').substring(0, 40),
+                                        coverUrl: finalCover,
+                                        detailUrl: href,
+                                        badge: finalBadge,
+                                        section: finalSection,
+                                        tag: finalTag
+                                    },
+                                    score: score
+                                };
+                            }
+                        } catch (cardErr) {
+                            // 單一卡片例外不中斷整批抓取
                         }
                     }
 
@@ -1043,12 +1000,16 @@ class WebScraperBridge(private val context: Context) {
                         }
                     }
 
-                    if (window.${INTERFACE_NAME} && window.${INTERFACE_NAME}.onDataScraped) {
-                        window.${INTERFACE_NAME}.onDataScraped(
-                            JSON.stringify(categories),
-                            JSON.stringify(subTabs),
-                            JSON.stringify(dramaResults)
-                        );
+                    try {
+                        if (window.${INTERFACE_NAME} && window.${INTERFACE_NAME}.onDataScraped) {
+                            window.${INTERFACE_NAME}.onDataScraped(
+                                JSON.stringify(categories),
+                                JSON.stringify(subTabs),
+                                JSON.stringify(dramaResults)
+                            );
+                        }
+                    } catch(callErr) {
+                        console.error('onDataScraped 傳輸異常: ' + callErr);
                     }
                 }
             })();

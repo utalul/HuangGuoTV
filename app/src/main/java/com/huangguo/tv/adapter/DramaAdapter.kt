@@ -14,8 +14,8 @@ import com.huangguo.tv.model.DramaItem
 
 /**
  * 原生 Android TV 海報牆適配器
- * 支援 Coil 防盜鏈 Header 注入 (Referer, User-Agent) 與詳細除錯日誌
- * 支援 Base64 (data:image/jpeg;base64,...) 封面圖原生解碼
+ * 支援 Coil 防盜鏈 Header 注入 (Referer, User-Agent) 與詳細除錯日誌，
+ * 支援第一張圖載入失敗即時診斷回呼。
  */
 class DramaAdapter(
     private var items: List<DramaItem> = emptyList(),
@@ -23,6 +23,7 @@ class DramaAdapter(
     var userAgent: String = "",
     var onKeyUpEdge: (() -> Unit)? = null,
     var onKeyLeftEdge: (() -> Unit)? = null,
+    var onFirstImageError: ((String) -> Unit)? = null,
     private val onItemClick: (DramaItem) -> Unit
 ) : RecyclerView.Adapter<DramaAdapter.DramaViewHolder>() {
 
@@ -49,6 +50,7 @@ class DramaAdapter(
             ua = userAgent,
             onKeyUpEdge = onKeyUpEdge,
             onKeyLeftEdge = onKeyLeftEdge,
+            onFirstImageError = if (position == 0) onFirstImageError else null,
             onClick = onItemClick
         )
     }
@@ -82,6 +84,7 @@ class DramaAdapter(
             ua: String,
             onKeyUpEdge: (() -> Unit)?,
             onKeyLeftEdge: (() -> Unit)?,
+            onFirstImageError: ((String) -> Unit)?,
             onClick: (DramaItem) -> Unit
         ) {
             tvTitle.text = item.title
@@ -99,14 +102,12 @@ class DramaAdapter(
                     placeholder(R.drawable.dialog_bg)
                     error(R.drawable.dialog_bg)
 
-                    // 僅對非 Base64 的 HTTP 網址注入 Referer 與 User-Agent 防盜鏈 Header
-                    if (!item.coverUrl.startsWith("data:")) {
-                        if (baseUrl.isNotEmpty()) {
-                            addHeader("Referer", baseUrl)
-                        }
-                        if (ua.isNotEmpty()) {
-                            addHeader("User-Agent", ua)
-                        }
+                    // 注入 Referer 與 User-Agent 防盜鏈 Header
+                    if (baseUrl.isNotEmpty()) {
+                        addHeader("Referer", baseUrl)
+                    }
+                    if (ua.isNotEmpty()) {
+                        addHeader("User-Agent", ua)
                     }
 
                     listener(
@@ -114,8 +115,10 @@ class DramaAdapter(
                             Log.d(TAG, "封面載入成功: ${item.title}")
                         },
                         onError = { _, result ->
+                            val errMessage = result.throwable.message ?: "未知錯誤"
                             val shortUrl = if (item.coverUrl.length > 60) item.coverUrl.take(60) + "..." else item.coverUrl
-                            Log.e("CoilError", "圖片載入失敗 [${item.title}]: $shortUrl, 原因: ${result.throwable.message}")
+                            Log.e(TAG, "圖片載入失敗 [${item.title}]: $shortUrl, 原因: $errMessage")
+                            onFirstImageError?.invoke(errMessage)
                         }
                     )
                 }

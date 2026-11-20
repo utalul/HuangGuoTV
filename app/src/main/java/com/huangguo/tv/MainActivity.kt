@@ -36,7 +36,8 @@ import kotlinx.coroutines.launch
 
 /**
  * 原生 Android TV 雙欄主畫面 (左側分類邊欄 + 右側上方子分類 Tab 列 + 海報牆)
- * 具備完整 32 位元電視盒啟動防崩潰保護與螢幕即時錯誤診斷面板
+ * 具備完整 32 位元電視盒啟動防崩潰保護與螢幕即時錯誤診斷面板。
+ * 左側邊欄不依賴網頁抓取結果，啟動即填入預設大分類，永遠穩定顯示。
  */
 class MainActivity : AppCompatActivity() {
 
@@ -44,6 +45,18 @@ class MainActivity : AppCompatActivity() {
         private const val TAG = "HuangGuoTV_Main"
         private const val EXIT_INTERVAL = 2000L
         private const val SPAN_COUNT = 4 // 右側海報牆 4 欄
+
+        // 預設左側大分類清單（啟動立即填入，確保邊欄永遠穩定存在）
+        val DEFAULT_CATEGORIES = listOf(
+            CategoryItem("cat_home", "首頁推薦", "/"),
+            CategoryItem("cat_orig", "黃果原創", "/original"),
+            CategoryItem("cat_short", "短劇", "/short"),
+            CategoryItem("cat_comic", "漫劇", "/comic"),
+            CategoryItem("cat_topic", "專題", "/topic"),
+            CategoryItem("cat_rank", "排行榜", "/rank"),
+            CategoryItem("cat_blog", "博客", "/blog"),
+            CategoryItem("cat_gossip", "黑料吃瓜", "/gossip")
+        )
 
         // 預設首頁頂部橫向子分類（四大板塊 + 三大專題推薦 + 二十個熱門標籤）
         val DEFAULT_SUB_TABS = listOf(
@@ -85,6 +98,7 @@ class MainActivity : AppCompatActivity() {
     // 右側主內容區
     private var tvCurrentCategory: TextView? = null
     private var tvCurrentLine: TextView? = null
+    private var tvDiagnosticInfo: TextView? = null
     private var btnReload: Button? = null
     private var btnSwitchLine: Button? = null
     private var btnCheckUpdate: Button? = null
@@ -150,6 +164,7 @@ class MainActivity : AppCompatActivity() {
         // 右側主內容區
         tvCurrentCategory = findViewById(R.id.tvCurrentCategory)
         tvCurrentLine = findViewById(R.id.tvCurrentLine)
+        tvDiagnosticInfo = findViewById(R.id.tvDiagnosticInfo)
         btnReload = findViewById(R.id.btnReload)
         btnSwitchLine = findViewById(R.id.btnSwitchLine)
         btnCheckUpdate = findViewById(R.id.btnCheckUpdate)
@@ -178,10 +193,11 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setupRecyclerViews() {
-        // 1. 左側邊欄分類列表 (垂直佈局)
+        // 1. 左側邊欄分類列表 (垂直佈局，立即使用 DEFAULT_CATEGORIES 填入，不依賴網頁抓取結果)
         rvCategories?.layoutManager = LinearLayoutManager(this)
         categoryAdapter = CategoryAdapter(
-            items = emptyList(),
+            items = DEFAULT_CATEGORIES,
+            defaultSelected = 0,
             onKeyRight = {
                 // 左側邊欄按「右鍵」優先進入上方子分類 Tab 列；若無子分類則進入海報牆
                 if (rvSubTabs?.visibility == View.VISIBLE && (subTabAdapter?.itemCount ?: 0) > 0) {
@@ -195,7 +211,7 @@ class MainActivity : AppCompatActivity() {
             }
         ) { category, position ->
             tvCurrentCategory?.text = category.title
-            if (category.id == "cat_home") {
+            if (position == 0) {
                 rvSubTabs?.visibility = View.VISIBLE
                 if (allHomeDramas.isNotEmpty()) {
                     dramaAdapter?.updateData(allHomeDramas)
@@ -209,8 +225,9 @@ class MainActivity : AppCompatActivity() {
             }
         }
         rvCategories?.adapter = categoryAdapter
+        tvCurrentCategory?.text = DEFAULT_CATEGORIES[0].title
 
-        // 2. 首頁上方橫向子分類 Tab 列 (水平佈局)
+        // 2. 首頁上方橫向子分類 Tab 列 (水平佈局，立即填入預設子分類)
         rvSubTabs?.layoutManager = LinearLayoutManager(this, LinearLayoutManager.HORIZONTAL, false)
         subTabAdapter = SubTabAdapter(
             items = emptyList(),
@@ -255,6 +272,12 @@ class MainActivity : AppCompatActivity() {
                 val catIndex = categoryAdapter?.getSelectedIndex() ?: 0
                 rvCategories?.findViewHolderForAdapterPosition(catIndex)?.itemView?.requestFocus()
                     ?: rvCategories?.requestFocus()
+            },
+            onFirstImageError = { errorMsg ->
+                runOnUiThread {
+                    val currentText = tvDiagnosticInfo?.text?.toString() ?: ""
+                    tvDiagnosticInfo?.text = "首圖載入失敗: $errorMsg | $currentText"
+                }
             }
         ) { dramaItem ->
             openPlayer(dramaItem)
@@ -284,20 +307,24 @@ class MainActivity : AppCompatActivity() {
 
         layoutLoading?.visibility = View.VISIBLE
         tvLoadingMsg?.text = "正在抓取最新分類與短劇清單..."
+        tvDiagnosticInfo?.text = "正在連線抓取中..."
 
         Log.i(TAG, "開始抓取首頁資料: $targetUrl")
         webScraperBridge?.scrapeHomeDataAndCategories(targetUrl) { categories, subTabs, dramas ->
             layoutLoading?.visibility = View.GONE
             allHomeDramas = dramas
 
+            // 若網頁成功解析出包含真實連結的分類，且非空，則進行增量更新；否則維持預設分類，保證邊欄永遠存在
             if (categories.isNotEmpty()) {
-                categoryAdapter?.updateData(categories, defaultSelected = 0)
-                tvCurrentCategory?.text = categories[0].title
+                val currentSelected = categoryAdapter?.getSelectedIndex() ?: 0
+                categoryAdapter?.updateData(categories, defaultSelected = currentSelected)
+                tvCurrentCategory?.text = categories.getOrNull(currentSelected)?.title ?: "首頁推薦"
                 rvCategories?.post {
-                    rvCategories?.findViewHolderForAdapterPosition(0)?.itemView?.requestFocus()
+                    rvCategories?.findViewHolderForAdapterPosition(currentSelected)?.itemView?.requestFocus()
                 }
             }
 
+            // 合併動態抓取的 subTabs 與預設清單
             val mergedSubTabs = if (subTabs.isNotEmpty()) {
                 val list = subTabs.toMutableList()
                 val existingTitles = subTabs.map { it.title }.toSet()
@@ -315,12 +342,18 @@ class MainActivity : AppCompatActivity() {
 
             if (dramas.isNotEmpty()) {
                 Log.i(TAG, "首頁短劇抓取成功，共 ${dramas.size} 部")
+                val first = dramas.first()
+                val shortCover = if (first.coverUrl.length > 45) first.coverUrl.take(45) + "..." else first.coverUrl
+                val shortDetail = if (first.detailUrl.length > 35) first.detailUrl.take(35) + "..." else first.detailUrl
+                tvDiagnosticInfo?.text = "已抓 ${dramas.size} 部 | 圖: $shortCover | 連: $shortDetail"
+
                 dramaAdapter?.updateData(dramas)
                 rvDramaGrid?.post {
                     rvDramaGrid?.scrollToPosition(0)
                 }
             } else {
                 Log.w(TAG, "首頁短劇列表為空")
+                tvDiagnosticInfo?.text = "抓取 0 部 | 請檢查線路或點擊重新整理"
                 if (webScraperBridge?.isWebViewSupported == false) {
                     tvLoadingMsg?.text = WebScraperBridge.MSG_MISSING_WEBVIEW
                 } else {
@@ -391,14 +424,19 @@ class MainActivity : AppCompatActivity() {
      */
     private fun loadTagOrKeywordOnline(keyword: String) {
         layoutLoading?.visibility = View.VISIBLE
-        tvLoadingMsg?.text = "正在載入【${keyword}】相關短劇..."
+        tvLoadingMsg?.text = "正在載入【$keyword】相關短劇..."
         webScraperBridge?.clickNavOrTag(keyword) { dramas ->
             layoutLoading?.visibility = View.GONE
             if (dramas.isNotEmpty()) {
+                val first = dramas.first()
+                val shortCover = if (first.coverUrl.length > 45) first.coverUrl.take(45) + "..." else first.coverUrl
+                val shortDetail = if (first.detailUrl.length > 35) first.detailUrl.take(35) + "..." else first.detailUrl
+                tvDiagnosticInfo?.text = "【$keyword】已抓 ${dramas.size} 部 | 圖: $shortCover | 連: $shortDetail"
+
                 dramaAdapter?.updateData(dramas)
                 rvDramaGrid?.scrollToPosition(0)
             } else {
-                Toast.makeText(this, "未找到【${keyword}】專屬劇集，顯示精選短劇", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "未找到【$keyword】專屬劇集，顯示精選短劇", Toast.LENGTH_SHORT).show()
                 dramaAdapter?.updateData(allHomeDramas)
                 rvDramaGrid?.scrollToPosition(0)
             }
@@ -418,11 +456,17 @@ class MainActivity : AppCompatActivity() {
             layoutLoading?.visibility = View.GONE
             if (dramaList.isNotEmpty()) {
                 Log.i(TAG, "分類【${category.title}】抓取成功，共 ${dramaList.size} 部")
+                val first = dramaList.first()
+                val shortCover = if (first.coverUrl.length > 45) first.coverUrl.take(45) + "..." else first.coverUrl
+                val shortDetail = if (first.detailUrl.length > 35) first.detailUrl.take(35) + "..." else first.detailUrl
+                tvDiagnosticInfo?.text = "【${category.title}】已抓 ${dramaList.size} 部 | 圖: $shortCover | 連: $shortDetail"
+
                 dramaAdapter?.updateData(dramaList)
                 rvDramaGrid?.post {
                     rvDramaGrid?.scrollToPosition(0)
                 }
             } else {
+                tvDiagnosticInfo?.text = "【${category.title}】暫無資料"
                 tvLoadingMsg?.text = "【${category.title}】分類暫無資料，請切換其他分類"
                 layoutLoading?.visibility = View.VISIBLE
             }
@@ -511,6 +555,7 @@ class MainActivity : AppCompatActivity() {
         showModeHint("正在切換至新線路: $selectedUrl")
         layoutLoading?.visibility = View.VISIBLE
         tvLoadingMsg?.text = "正在切換至【$selectedUrl】並抓取短劇..."
+        tvDiagnosticInfo?.text = "正在切換線路至: $selectedUrl"
 
         allHomeDramas = emptyList()
         dramaAdapter?.updateData(emptyList())
@@ -598,27 +643,11 @@ class MainActivity : AppCompatActivity() {
             text = "重新嘗試啟動"
             setBackgroundColor(Color.parseColor("#E65100"))
             setTextColor(Color.WHITE)
-            isFocusable = true
-            isFocusableInTouchMode = true
             setOnClickListener {
                 recreate()
             }
         }
-
-        val btnExit = Button(this).apply {
-            text = "關閉應用"
-            setBackgroundColor(Color.parseColor("#333333"))
-            setTextColor(Color.WHITE)
-            isFocusable = true
-            isFocusableInTouchMode = true
-            setPadding(30, 0, 30, 0)
-            setOnClickListener {
-                finish()
-            }
-        }
-
         btnLayout.addView(btnRetry)
-        btnLayout.addView(btnExit)
 
         rootLayout.addView(tvTitle)
         rootLayout.addView(tvSub)
@@ -626,95 +655,26 @@ class MainActivity : AppCompatActivity() {
         rootLayout.addView(btnLayout)
 
         setContentView(rootLayout)
-
-        btnRetry.requestFocus()
     }
 
-    /**
-     * TV 遙控器焦點聯動 (規格一)
-     * - 左側邊欄按「右鍵」無縫移入右側海報牆第一張
-     * - 右側海報牆最左欄按「左鍵」返回左側邊欄選中項
-     */
-    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-        val keyCode = event.keyCode
-        val action = event.action
-
-        if (action == KeyEvent.ACTION_DOWN) {
-            val currentFocus = currentFocus
-
-            // 1. 若目前焦點在左側邊欄，按下「右鍵」：焦點轉移至右側海報牆第一張
-            if (keyCode == KeyEvent.KEYCODE_DPAD_RIGHT) {
-                if (currentFocus != null && isViewInSidebar(currentFocus)) {
-                    val firstHolder = rvDramaGrid?.findViewHolderForAdapterPosition(0)
-                    if (firstHolder != null) {
-                        firstHolder.itemView.requestFocus()
-                        return true
-                    }
-                }
-            }
-
-            // 2. 若目前焦點在右側海報牆最左欄 (position % SPAN_COUNT == 0)，按下「左鍵」：焦點返回左側邊欄選中項
-            if (keyCode == KeyEvent.KEYCODE_DPAD_LEFT) {
-                if (currentFocus != null && isViewInDramaGrid(currentFocus)) {
-                    val pos = rvDramaGrid?.getChildAdapterPosition(currentFocus) ?: RecyclerView.NO_POSITION
-                    if (pos != RecyclerView.NO_POSITION && (pos % SPAN_COUNT == 0)) {
-                        val selPos = categoryAdapter?.getSelectedIndex() ?: 0
-                        val targetHolder = rvCategories?.findViewHolderForAdapterPosition(selPos)
-                        if (targetHolder != null) {
-                            targetHolder.itemView.requestFocus()
-                            return true
-                        } else {
-                            rvCategories?.requestFocus()
-                            return true
-                        }
-                    }
-                }
-            }
-
-            // 3. 返回鍵處理
-            if (keyCode == KeyEvent.KEYCODE_BACK) {
-                // 如果在右側海報牆，返回鍵優先將焦點帶回左側分類
-                if (currentFocus != null && isViewInDramaGrid(currentFocus)) {
-                    val selPos = categoryAdapter?.getSelectedIndex() ?: 0
-                    rvCategories?.findViewHolderForAdapterPosition(selPos)?.itemView?.requestFocus()
-                    return true
-                }
-
-                val now = System.currentTimeMillis()
-                if (now - exitToastTime < EXIT_INTERVAL) {
-                    finish()
-                } else {
-                    exitToastTime = now
-                    Toast.makeText(this, getString(R.string.msg_press_again_exit), Toast.LENGTH_SHORT).show()
-                }
+    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
+        if (keyCode == KeyEvent.KEYCODE_BACK) {
+            val now = System.currentTimeMillis()
+            if (now - exitToastTime > EXIT_INTERVAL) {
+                exitToastTime = now
+                Toast.makeText(this, "再按一次返回鍵退出 黃果短劇 TV", Toast.LENGTH_SHORT).show()
+                return true
+            } else {
+                finish()
                 return true
             }
         }
-
-        return super.dispatchKeyEvent(event)
-    }
-
-    private fun isViewInSidebar(view: View): Boolean {
-        var parent = view.parent
-        while (parent != null) {
-            if (parent === rvCategories) return true
-            parent = parent.parent
-        }
-        return false
-    }
-
-    private fun isViewInDramaGrid(view: View): Boolean {
-        var parent = view.parent
-        while (parent != null) {
-            if (parent === rvDramaGrid) return true
-            parent = parent.parent
-        }
-        return false
+        return super.onKeyDown(keyCode, event)
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        webScraperBridge?.destroy()
         handler.removeCallbacksAndMessages(null)
+        webScraperBridge?.destroy()
     }
 }

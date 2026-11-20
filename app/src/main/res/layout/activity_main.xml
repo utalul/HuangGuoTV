@@ -113,6 +113,17 @@
                     android:text="目前線路：連線中..."
                     android:textColor="#A0A0A0"
                     android:textSize="11sp" />
+
+                <TextView
+                    android:id="@+id/tvDiagnosticInfo"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="2dp"
+                    android:ellipsize="end"
+                    android:maxLines="1"
+                    android:text="診斷資訊：等待抓取..."
+                    android:textColor="#80FFFFFF"
+                    android:textSize="10sp" />
             </LinearLayout>
 
             <!-- 右上角操作按鈕群 -->
