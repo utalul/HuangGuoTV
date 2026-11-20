@@ -197,7 +197,7 @@ class MainActivity : AppCompatActivity() {
         rvCategories?.layoutManager = LinearLayoutManager(this)
         categoryAdapter = CategoryAdapter(
             items = DEFAULT_CATEGORIES,
-            defaultSelected = 0,
+            selectedIndex = 0,
             onKeyRight = {
                 // 左側邊欄按「右鍵」優先進入上方子分類 Tab 列；若無子分類則進入海報牆
                 if (rvSubTabs?.visibility == View.VISIBLE && (subTabAdapter?.itemCount ?: 0) > 0) {
