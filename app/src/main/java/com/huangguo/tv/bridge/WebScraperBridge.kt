@@ -27,8 +27,8 @@ import org.json.JSONObject
  * 針對 32 位元低記憶體 Android TV 進行深度優化：
  * 1. 延遲初始化 (Lazy Init)：按需建立 WebView，避免同時駐留多個實例引起 OOM。
  * 2. 15 秒超時保護 (Timeout)：避免因伺服器無響應或 DOM 異常導致 Loading 卡死。
- * 3. 徹底移除 Canvas 轉檔，直接提取原始圖片絕對網址交由 Coil 配合寬鬆 SSL 載入，杜絕跨網域 SecurityError。
- * 4. DOM <video> 直連網址嗅探與高頻輪巡自動點擊播放按鈕。
+ * 3. 徹底修復封面圖為空問題：擴大候選節點至父容器、picture > source 與 background-image。
+ * 4. 嚴格過濾分類入口（如 /ai-duanju/），支援播放頁 iframe 深入串流嗅探與自動點擊「加載更多」。
  */
 class WebScraperBridge(private val context: Context) {
 
@@ -72,6 +72,14 @@ class WebScraperBridge(private val context: Context) {
 
     // 防止重複回報同一個串流網址
     private var currentSniffedUrl: String? = null
+
+    /**
+     * 取得詳情播放頁 WebView，供逾時直接呈現或網頁播放
+     */
+    fun getDetailWebView(): WebView? {
+        initDetailWebView()
+        return detailWebView
+    }
 
     @SuppressLint("SetJavaScriptEnabled")
     private fun createBaseWebView(): WebView? {
@@ -456,12 +464,10 @@ class WebScraperBridge(private val context: Context) {
 
     /**
      * 注入首頁與分類抓取核心 JS
-     * 規格要求：
-     * 1. 徹底移除 Canvas 轉檔與 toDataURL()，直接提取原始圖片絕對網址交由 Coil 配合寬鬆 SSL 載入。
-     * 2. 卡片掃描迴圈中每張卡片皆包覆 try-catch，防止單一 DOM 元素錯誤中斷整批回傳。
-     * 3. 嚴格過濾播放量數字 (236.4w / 550.8w 等) 避免誤抓為劇名，將播放量轉存為角標 badge。
-     * 4. 雙向智慧解析真實 detailUrl，排除 #、javascript:、.apk 下載連結。
-     * 5. 滾動 3~4 次確保懶載入各區塊劇集完整呈現。
+     * 包含三大升級：
+     * 1. 徹底修復 coverUrl：向上遍歷父容器，涵蓋所有 img、picture > source 與 background-image。
+     * 2. 嚴格排除 /ai-duanju/、/ai-manju/ 等分類目錄頁，保證抓到的皆為真實劇集。
+     * 3. 自動搜尋並點擊「加載更多」按鈕（最多 2 次），補齊專題合集中的後續劇集。
      */
     private fun injectDataScrapingScript(wv: WebView) {
         val js = """
@@ -508,9 +514,34 @@ class WebScraperBridge(private val context: Context) {
                     }
                 }
 
-                // 1. 多段式自動滾動，確保懶載入的「精選推薦」、「最近上新」、「熱播短劇」板塊全數渲染
+                // 多段式自動滾動，並自動觸發「加載更多」以抓齊 81 部專題等劇集
                 var scrollCount = 0;
                 var maxScrolls = 4;
+                var moreClickCount = 0;
+                var maxMoreClicks = 2;
+
+                function tryClickLoadMore() {
+                    if (moreClickCount >= maxMoreClicks) return false;
+                    var keywords = ['加載更多', '加载更多', '查看更多', '展開全部', '展开全部', '更多', '點擊加載', '点击加载'];
+                    var clickables = document.querySelectorAll('button, a, div, span, [role="button"], .van-button, .load-more');
+                    for (var i = 0; i < clickables.length; i++) {
+                        var el = clickables[i];
+                        var txt = (el.innerText || el.textContent || '').trim();
+                        if (!txt) continue;
+                        for (var k = 0; k < keywords.length; k++) {
+                            if (txt === keywords[k] || (txt.indexOf(keywords[k]) !== -1 && txt.length <= keywords[k].length + 4)) {
+                                try {
+                                    el.click();
+                                    moreClickCount++;
+                                    console.log('自動點擊【加載更多】第 ' + moreClickCount + ' 次');
+                                    return true;
+                                } catch(e) {}
+                            }
+                        }
+                    }
+                    return false;
+                }
+
                 var scrollInterval = setInterval(function() {
                     scrollCount++;
                     autoClickAge();
@@ -518,13 +549,16 @@ class WebScraperBridge(private val context: Context) {
                     try {
                         window.dispatchEvent(new Event('scroll'));
                     } catch(e) {}
+
+                    tryClickLoadMore();
+
                     if (scrollCount >= maxScrolls) {
                         clearInterval(scrollInterval);
                         setTimeout(function() {
                             doFullScrape();
-                        }, 500);
+                        }, 600);
                     }
-                }, 400);
+                }, 450);
 
                 window.doFullScrape = doFullScrape;
 
@@ -538,6 +572,11 @@ class WebScraperBridge(private val context: Context) {
                         '客服', '聯繫', '联系', '版權', '版权', '廣告', '广告', '官方群',
                         '收藏', '歷史記錄', '历史记录', '加入我們', '加入我们', '立即播放', '立即观看',
                         '播放', '观看'
+                    ];
+
+                    var categoryTitleKeywords = [
+                        'ai成人短劇', 'ai成人漫劇', 'ai短劇', 'ai漫劇', '成人短劇', '成人漫劇',
+                        '短劇分類', '漫劇分類', '精選推薦', '最近上新', '熱播短劇', '黃果原創', '黃果短劇'
                     ];
 
                     function isBlacklisted(str) {
@@ -555,6 +594,10 @@ class WebScraperBridge(private val context: Context) {
                         for (var i = 0; i < nonDramaKeywords.length; i++) {
                             var kw = nonDramaKeywords[i].toLowerCase();
                             if (lower === kw || lower.indexOf(kw) !== -1) return true;
+                        }
+                        for (var c = 0; c < categoryTitleKeywords.length; c++) {
+                            var ckw = categoryTitleKeywords[c];
+                            if (lower === ckw || lower.indexOf(ckw) !== -1) return true;
                         }
                         return false;
                     }
@@ -591,73 +634,125 @@ class WebScraperBridge(private val context: Context) {
                         return true;
                     }
 
-                    function extractBackgroundImage(el) {
-                        if (!el) return '';
-                        var candidates = [el];
-                        if (el.parentElement) candidates.push(el.parentElement);
-                        var children = el.querySelectorAll ? el.querySelectorAll('div, span, a, section, i') : [];
-                        for (var c = 0; c < Math.min(children.length, 6); c++) {
-                            candidates.push(children[c]);
+                    // 深度提取原始圖片網址：擴大搜尋範圍至 card、aTag 與最多 3 層父容器
+                    function extractCoverFromElement(card, aTag) {
+                        var containers = [];
+                        if (card) containers.push(card);
+                        if (aTag && aTag !== card) containers.push(aTag);
+
+                        var curr = (card || aTag);
+                        var depth = 0;
+                        while (curr && curr.parentElement && curr.parentElement !== document.body && depth < 3) {
+                            curr = curr.parentElement;
+                            depth++;
+                            var childLinks = curr.querySelectorAll ? curr.querySelectorAll('a[href*="play"], a[href*="detail"], a[href*="vod"], a[href*="video"]') : [];
+                            if (childLinks.length <= 2) {
+                                containers.push(curr);
+                            } else {
+                                break;
+                            }
                         }
-                        for (var i = 0; i < candidates.length; i++) {
-                            var target = candidates[i];
-                            var bg = target.style.backgroundImage || (window.getComputedStyle ? window.getComputedStyle(target).backgroundImage : '') || '';
-                            if (bg && bg !== 'none') {
-                                var match = bg.match(/url\(['"]?([^'"]+)['"]?\)/);
+
+                        for (var ci = 0; ci < containers.length; ci++) {
+                            var cEl = containers[ci];
+
+                            // A. 尋找所有 img 標籤 (包括 picture > source, img)
+                            var imgs = cEl.querySelectorAll ? cEl.querySelectorAll('img') : [];
+                            for (var im = 0; im < imgs.length; im++) {
+                                var img = imgs[im];
+                                var rawSrc = img.getAttribute('data-src') ||
+                                             img.getAttribute('data-original') ||
+                                             img.getAttribute('data-lazy-src') ||
+                                             img.getAttribute('data-background') ||
+                                             img.getAttribute('data-srcset') ||
+                                             img.getAttribute('srcset') ||
+                                             img.currentSrc ||
+                                             img.src || '';
+                                if (rawSrc) {
+                                    if (rawSrc.indexOf(',') !== -1) {
+                                        var parts = rawSrc.split(',');
+                                        rawSrc = parts[parts.length - 1].trim().split(' ')[0];
+                                    }
+                                    if (isValidImageUrl(rawSrc)) {
+                                        return toAbsoluteUrl(rawSrc);
+                                    }
+                                }
+                            }
+
+                            // B. 尋找 picture > source 標籤
+                            var sources = cEl.querySelectorAll ? cEl.querySelectorAll('source') : [];
+                            for (var sc = 0; sc < sources.length; sc++) {
+                                var sEl = sources[sc];
+                                var sSrc = sEl.getAttribute('srcset') || sEl.getAttribute('data-srcset') || sEl.src || '';
+                                if (sSrc) {
+                                    if (sSrc.indexOf(',') !== -1) {
+                                        var sparts = sSrc.split(',');
+                                        sSrc = sparts[sparts.length - 1].trim().split(' ')[0];
+                                    }
+                                    if (isValidImageUrl(sSrc)) {
+                                        return toAbsoluteUrl(sSrc);
+                                    }
+                                }
+                            }
+
+                            // C. 尋找 CSS background-image
+                            var bgNodes = cEl.querySelectorAll ? cEl.querySelectorAll('div, span, a, section, i, [style*="url"]') : [];
+                            var bgCandidates = [cEl];
+                            for (var b = 0; b < Math.min(bgNodes.length, 12); b++) {
+                                bgCandidates.push(bgNodes[b]);
+                            }
+                            for (var bi = 0; bi < bgCandidates.length; bi++) {
+                                var target = bgCandidates[bi];
+                                var inlineStyle = target.getAttribute ? (target.getAttribute('style') || '') : '';
+                                var bg = target.style.backgroundImage || (window.getComputedStyle ? window.getComputedStyle(target).backgroundImage : '') || '';
+                                var match = (inlineStyle + ' ' + bg).match(/url\(['"]?([^'"]+)['"]?\)/);
                                 if (match && match[1] && isValidImageUrl(match[1])) {
                                     return toAbsoluteUrl(match[1]);
                                 }
                             }
                         }
+
                         return '';
                     }
 
-                    // 直接提取原始圖片絕對網址，徹底移除 Canvas 轉檔以杜絕 SecurityError
-                    function extractCoverFromElement(card) {
-                        var img = card.querySelector('img');
-                        if (img) {
-                            var rawSrc = img.getAttribute('data-src') ||
-                                         img.getAttribute('data-original') ||
-                                         img.getAttribute('data-lazy-src') ||
-                                         img.getAttribute('data-background') ||
-                                         img.getAttribute('data-srcset') ||
-                                         img.currentSrc ||
-                                         img.src || '';
-                            if (rawSrc) {
-                                if (rawSrc.indexOf(',') !== -1) {
-                                    var parts = rawSrc.split(',');
-                                    rawSrc = parts[parts.length - 1].trim().split(' ')[0];
-                                }
-                                if (isValidImageUrl(rawSrc)) {
-                                    return toAbsoluteUrl(rawSrc);
-                                }
-                            }
-                        }
-                        return extractBackgroundImage(card);
-                    }
-
+                    // 嚴格驗證是否為真實劇集播放/詳情頁（排除 /ai-duanju/ 等純分類目錄入口）
                     function isValidDramaUrl(href) {
                         if (!href) return false;
-                        var lower = href.toLowerCase();
+                        var lower = href.toLowerCase().trim();
                         if (lower.indexOf('javascript') === 0 || lower.indexOf('.apk') !== -1) return false;
                         try {
                             var u = new URL(href, location.href);
-                            var path = u.pathname;
-                            if (path === '/' || path === '') return false;
-                            if (path.indexOf('/category') === 0 || path.indexOf('/cat') === 0 || path.indexOf('/type') === 0) return false;
-                            if (path.indexOf('/tag') === 0 || path.indexOf('/tags') === 0) return false;
-                            if (path.indexOf('/topic') === 0 || path.indexOf('/topics') === 0) return false;
-                            if (path.indexOf('/search') === 0) return false;
-                            if (path.indexOf('/member') === 0 || path.indexOf('/user') === 0) return false;
+                            var path = u.pathname.replace(/\/+$/, ''); // 去除末尾斜杠
+                            if (path === '' || path === '/') return false;
+
+                            // 排除純分類與固定目錄頁
+                            var pureCategories = [
+                                '/ai-duanju', '/ai-manju', '/duanju', '/manju', '/original',
+                                '/short', '/comic', '/rank', '/blog', '/gossip',
+                                '/category', '/cat', '/type', '/tag', '/tags', '/topic', '/topics',
+                                '/channel', '/search', '/member', '/user', '/about', '/app'
+                            ];
+                            for (var p = 0; p < pureCategories.length; p++) {
+                                var pureCat = pureCategories[p];
+                                if (path === pureCat || path.indexOf(pureCat + '/') === 0) {
+                                    var sub = path.substring(pureCat.length);
+                                    if (!sub || sub === '/') return false; // 純分類目錄頁，排除！
+                                    if (!/\d+/.test(sub) && sub.indexOf('.html') === -1 && sub.indexOf('play') === -1 && sub.indexOf('detail') === -1 && sub.indexOf('vod') === -1) {
+                                        return false;
+                                    }
+                                }
+                            }
 
                             if (lower.indexOf('play') !== -1 || lower.indexOf('video') !== -1 ||
                                 lower.indexOf('detail') !== -1 || lower.indexOf('vod') !== -1 ||
-                                lower.indexOf('drama') !== -1 || lower.indexOf('item') !== -1 ||
-                                /\d+/.test(path) || path.indexOf('.html') !== -1) {
+                                lower.indexOf('/ep') !== -1 || /\d+/.test(path) || path.indexOf('.html') !== -1) {
                                 return true;
                             }
+
                             var segments = path.split('/').filter(Boolean);
-                            return segments.length >= 1;
+                            if (segments.length <= 1) return false; // 單段且無 ID 特徵的絕非劇集
+
+                            return true;
                         } catch(e) {
                             return false;
                         }
@@ -669,23 +764,21 @@ class WebScraperBridge(private val context: Context) {
                         if (el.tagName && el.tagName.toUpperCase() === 'A' && el.href) {
                             var h = el.href;
                             if (h.indexOf('javascript') === -1 && h.indexOf('#') === -1 && h.indexOf('.apk') === -1) {
-                                return h;
+                                if (isValidDramaUrl(h)) return h;
                             }
                         }
                         var parentA = el.closest ? el.closest('a[href]:not([href^="javascript"]):not([href^="#"])') : null;
-                        if (parentA && parentA.href) return parentA.href;
+                        if (parentA && parentA.href && isValidDramaUrl(parentA.href)) return parentA.href;
 
                         var links = el.querySelectorAll ? el.querySelectorAll('a[href]:not([href^="javascript"]):not([href^="#"])') : [];
                         for (var i = 0; i < links.length; i++) {
                             var lh = links[i].href;
                             if (isValidDramaUrl(lh)) return lh;
                         }
-                        if (links.length > 0) return links[0].href;
+                        if (links.length > 0 && isValidDramaUrl(links[0].href)) return links[0].href;
 
                         var anyParent = el.closest ? el.closest('a') : null;
-                        if (anyParent && anyParent.href && anyParent.href.indexOf('javascript') === -1) return anyParent.href;
-                        var anyChild = el.querySelector ? el.querySelector('a') : null;
-                        if (anyChild && anyChild.href && anyChild.href.indexOf('javascript') === -1) return anyChild.href;
+                        if (anyParent && anyParent.href && anyParent.href.indexOf('javascript') === -1 && isValidDramaUrl(anyParent.href)) return anyParent.href;
 
                         return '';
                     }
@@ -875,24 +968,24 @@ class WebScraperBridge(private val context: Context) {
                             if (isBlacklisted(cardText)) continue;
                             if (/(\d+)\s*部[劇剧]集/.test(cardText) || /共\s*(\d+)\s*部/.test(cardText)) continue;
 
+                            var aTag = (card.tagName.toUpperCase() === 'A') ? card : card.querySelector('a');
                             var href = extractValidLink(card);
                             if (!href) continue;
                             href = toAbsoluteUrl(href);
-                            if (!href || isBlacklisted(href)) continue;
+                            if (!href || isBlacklisted(href) || !isValidDramaUrl(href)) continue;
 
-                            var cover = extractCoverFromElement(card);
+                            var cover = extractCoverFromElement(card, aTag);
                             var title = '';
                             var badge = '';
 
                             var primaryTitles = [];
-                            var aTag = (card.tagName.toUpperCase() === 'A') ? card : card.querySelector('a');
                             if (aTag) {
                                 var aTitle = (aTag.getAttribute('title') || '').trim();
                                 if (aTitle && !isBlacklisted(aTitle) && !isViewCountOrMetaText(aTitle) && aTitle.length >= 2) {
                                     primaryTitles.push({ text: aTitle, weight: 100 });
                                 }
                             }
-                            var imgEl = card.querySelector('img');
+                            var imgEl = card.querySelector('img') || (card.parentElement ? card.parentElement.querySelector('img') : null);
                             if (imgEl) {
                                 var alt = (imgEl.getAttribute('alt') || '').trim();
                                 if (alt && !isBlacklisted(alt) && !isViewCountOrMetaText(alt) && alt.length >= 2) {
@@ -975,6 +1068,12 @@ class WebScraperBridge(private val context: Context) {
                                 var finalSection = section || (dramaMap[normalizedKey] ? dramaMap[normalizedKey].item.section : '');
                                 var finalTag = dramaTag || (dramaMap[normalizedKey] ? dramaMap[normalizedKey].item.tag : '');
 
+                                // 若仍然未抓到封面，將容器 HTML 前 80 字元存入 finalTag 供畫面診斷
+                                if (!finalCover) {
+                                    var containerEl = (card.parentElement && card.parentElement !== document.body) ? card.parentElement : card;
+                                    finalTag = (containerEl.outerHTML || containerEl.innerHTML || '').substring(0, 80).replace(/\s+/g, ' ');
+                                }
+
                                 dramaMap[normalizedKey] = {
                                     item: {
                                         id: 'drama_' + (dramaIndex++),
@@ -1024,8 +1123,9 @@ class WebScraperBridge(private val context: Context) {
     /**
      * 注入詳情頁選集與播放器嗅探 JS
      * 1. 輪詢檢查 DOM <video> 標籤，若有 direct video src 立即通報
-     * 2. 500ms 高頻輪巡自動點擊「立即播放」、「第1集」、「開始播放」等按鈕
-     * 3. 完整抓取多集集數清單
+     * 2. 深入檢查 <iframe> 標籤，自動通報 iframe.src 載入深層串流
+     * 3. 500ms 高頻輪巡自動點擊「立即播放」、「第1集」、「開始播放」等按鈕
+     * 4. 完整抓取多集集數清單
      */
     private fun injectDetailAndSnifferScript(wv: WebView) {
         val js = """
@@ -1102,8 +1202,35 @@ class WebScraperBridge(private val context: Context) {
                     return false;
                 }
 
+                // 檢查播放頁中的 iframe，嗅探播放器內嵌網址
+                function sniffIframe() {
+                    var iframes = document.querySelectorAll('iframe');
+                    for (var i = 0; i < iframes.length; i++) {
+                        var ifr = iframes[i];
+                        var isrc = ifr.src || ifr.getAttribute('data-src') || '';
+                        if (isrc && isrc.indexOf('http') === 0) {
+                            var lower = isrc.toLowerCase();
+                            if (lower.indexOf('google') === -1 && lower.indexOf('analytics') === -1 &&
+                                lower.indexOf('facebook') === -1 && lower.indexOf('banner') === -1 &&
+                                lower.indexOf('ad.') === -1 && lower.indexOf('ads.') === -1) {
+                                if (lower.indexOf('.m3u8') !== -1 || lower.indexOf('.mp4') !== -1) {
+                                    if (window.${INTERFACE_NAME} && window.${INTERFACE_NAME}.onStreamSniffed) {
+                                        window.${INTERFACE_NAME}.onStreamSniffed(isrc);
+                                        return true;
+                                    }
+                                }
+                                if (window.${INTERFACE_NAME} && window.${INTERFACE_NAME}.onIframeDetected) {
+                                    window.${INTERFACE_NAME}.onIframeDetected(isrc);
+                                }
+                            }
+                        }
+                    }
+                    return false;
+                }
+
                 if (!sniffVideoDOM()) {
                     triggerPlayClick();
+                    sniffIframe();
                 }
 
                 function scrapeEpisodes() {
@@ -1157,6 +1284,7 @@ class WebScraperBridge(private val context: Context) {
                     pollCount++;
                     if (!sniffVideoDOM()) {
                         triggerPlayClick();
+                        sniffIframe();
                     }
                     if (sniffVideoDOM() || pollCount >= 30) {
                         clearInterval(pollTimer);
@@ -1303,6 +1431,17 @@ class WebScraperBridge(private val context: Context) {
             }
             checkAndNotifyStreamUrl(streamUrl)
         }
+
+        @JavascriptInterface
+        fun onIframeDetected(iframeUrl: String) {
+            Log.i(TAG, "收到 JS Interface onIframeDetected: $iframeUrl")
+            mainHandler.post {
+                if (currentSniffedUrl == null && detailWebView != null) {
+                    Log.i(TAG, "轉向載入 iframe 深入嗅探串流: $iframeUrl")
+                    detailWebView?.loadUrl(iframeUrl)
+                }
+            }
+        }
     }
 
     fun destroy() {
@@ -1311,10 +1450,12 @@ class WebScraperBridge(private val context: Context) {
             cancelDetailTimeout()
             try {
                 homeWebView?.stopLoading()
+                (homeWebView?.parent as? android.view.ViewGroup)?.removeView(homeWebView)
                 homeWebView?.destroy()
                 homeWebView = null
 
                 detailWebView?.stopLoading()
+                (detailWebView?.parent as? android.view.ViewGroup)?.removeView(detailWebView)
                 detailWebView?.destroy()
                 detailWebView = null
             } catch (e: Exception) {

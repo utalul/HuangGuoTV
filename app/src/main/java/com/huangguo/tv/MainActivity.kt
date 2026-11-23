@@ -343,7 +343,7 @@ class MainActivity : AppCompatActivity() {
             if (dramas.isNotEmpty()) {
                 Log.i(TAG, "首頁短劇抓取成功，共 ${dramas.size} 部")
                 val first = dramas.first()
-                val shortCover = if (first.coverUrl.length > 45) first.coverUrl.take(45) + "..." else first.coverUrl
+                val shortCover = formatCoverDiagnostic(first)
                 val shortDetail = if (first.detailUrl.length > 35) first.detailUrl.take(35) + "..." else first.detailUrl
                 tvDiagnosticInfo?.text = "已抓 ${dramas.size} 部 | 圖: $shortCover | 連: $shortDetail"
 
@@ -419,6 +419,15 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun formatCoverDiagnostic(first: DramaItem): String {
+        return if (first.coverUrl.isNotEmpty()) {
+            if (first.coverUrl.length > 45) first.coverUrl.take(45) + "..." else first.coverUrl
+        } else {
+            val debug = if (first.tag.isNotEmpty()) first.tag.take(50) else "無圖片標籤"
+            "空(HTML:$debug)"
+        }
+    }
+
     /**
      * 本地快取無匹配時，透過無頭 WebView 點擊網頁上的分類/標籤或跳轉加載對應分類頁
      */
@@ -429,7 +438,7 @@ class MainActivity : AppCompatActivity() {
             layoutLoading?.visibility = View.GONE
             if (dramas.isNotEmpty()) {
                 val first = dramas.first()
-                val shortCover = if (first.coverUrl.length > 45) first.coverUrl.take(45) + "..." else first.coverUrl
+                val shortCover = formatCoverDiagnostic(first)
                 val shortDetail = if (first.detailUrl.length > 35) first.detailUrl.take(35) + "..." else first.detailUrl
                 tvDiagnosticInfo?.text = "【$keyword】已抓 ${dramas.size} 部 | 圖: $shortCover | 連: $shortDetail"
 
@@ -457,7 +466,7 @@ class MainActivity : AppCompatActivity() {
             if (dramaList.isNotEmpty()) {
                 Log.i(TAG, "分類【${category.title}】抓取成功，共 ${dramaList.size} 部")
                 val first = dramaList.first()
-                val shortCover = if (first.coverUrl.length > 45) first.coverUrl.take(45) + "..." else first.coverUrl
+                val shortCover = formatCoverDiagnostic(first)
                 val shortDetail = if (first.detailUrl.length > 35) first.detailUrl.take(35) + "..." else first.detailUrl
                 tvDiagnosticInfo?.text = "【${category.title}】已抓 ${dramaList.size} 部 | 圖: $shortCover | 連: $shortDetail"
 

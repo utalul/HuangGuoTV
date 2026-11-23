@@ -7,7 +7,10 @@ import android.os.Looper
 import android.util.Log
 import android.view.KeyEvent
 import android.view.View
+import android.view.ViewGroup
 import android.view.WindowManager
+import android.widget.Button
+import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.RelativeLayout
@@ -35,7 +38,7 @@ import kotlin.math.min
 /**
  * 原生全螢幕 Android TV 影音播放器
  * 基於 AndroidX Media3 (ExoPlayer)，支援 HLS (.m3u8) / MP4，
- * 並配置解碼器自動降級 (Decoder Fallback)、重試次數保護與防盜鏈 Header 注入。
+ * 並配置解碼器自動降級 (Decoder Fallback)、重試次數保護、iframe 內嵌嗅探與 12 秒逾時直接網頁播放機制。
  */
 class PlayerActivity : AppCompatActivity() {
 
@@ -45,6 +48,7 @@ class PlayerActivity : AppCompatActivity() {
         private const val CONTROLLER_TIMEOUT = 5000L
         private const val SEEK_STEP_MS = 10000L // 10 秒快進/快退
         private const val MAX_STREAM_RETRY = 2  // 防止播放失敗無限重試死循環
+        private const val SNIFF_TIMEOUT_MS = 12000L // 12 秒嗅探保護
     }
 
     private lateinit var playerView: PlayerView
@@ -57,6 +61,9 @@ class PlayerActivity : AppCompatActivity() {
 
     private lateinit var layoutPlayerLoading: LinearLayout
     private lateinit var tvPlayerLoadingStatus: TextView
+    private lateinit var tvPlayerLoadingUrl: TextView
+    private lateinit var btnDirectWebPlay: Button
+    private lateinit var layoutWebViewContainer: FrameLayout
 
     private lateinit var layoutEpisodeSheet: RelativeLayout
     private lateinit var rvEpisodeGrid: RecyclerView
@@ -72,6 +79,16 @@ class PlayerActivity : AppCompatActivity() {
     private var streamRetryCount = 0 // 重試計數器
 
     private val handler = Handler(Looper.getMainLooper())
+
+    // 12 秒嗅探超時保護：提示並顯示直接開啟網頁播放按鈕
+    private val sniffTimeoutRunnable = Runnable {
+        if (exoPlayer?.isPlaying != true) {
+            layoutPlayerLoading.visibility = View.VISIBLE
+            tvPlayerLoadingStatus.text = "嗅探串流逾時 (12s)，可點擊下方直接開啟網頁播放"
+            btnDirectWebPlay.visibility = View.VISIBLE
+            btnDirectWebPlay.requestFocus()
+        }
+    }
 
     // 長按確認鍵呼出選集
     private var isCenterLongPressTriggered = false
@@ -152,6 +169,9 @@ class PlayerActivity : AppCompatActivity() {
 
         layoutPlayerLoading = findViewById(R.id.layoutPlayerLoading)
         tvPlayerLoadingStatus = findViewById(R.id.tvPlayerLoadingStatus)
+        tvPlayerLoadingUrl = findViewById(R.id.tvPlayerLoadingUrl)
+        btnDirectWebPlay = findViewById(R.id.btnDirectWebPlay)
+        layoutWebViewContainer = findViewById(R.id.layoutWebViewContainer)
 
         layoutEpisodeSheet = findViewById(R.id.layoutEpisodeSheet)
         rvEpisodeGrid = findViewById(R.id.rvEpisodeGrid)
@@ -159,6 +179,34 @@ class PlayerActivity : AppCompatActivity() {
 
         tvPlayerTitle.text = currentDrama?.title ?: "短劇播放"
         tvPlayerEpisode.text = "正在載入第 1 集..."
+
+        btnDirectWebPlay.setOnClickListener {
+            showDirectWebPlay()
+        }
+    }
+
+    /**
+     * 直接在全螢幕掛載無頭 WebView 進行網頁播放 / 介面診斷
+     */
+    private fun showDirectWebPlay() {
+        handler.removeCallbacks(sniffTimeoutRunnable)
+        layoutPlayerLoading.visibility = View.GONE
+        layoutWebViewContainer.visibility = View.VISIBLE
+
+        val wv = webScraperBridge.getDetailWebView()
+        if (wv != null) {
+            (wv.parent as? ViewGroup)?.removeView(wv)
+            layoutWebViewContainer.removeAllViews()
+            layoutWebViewContainer.addView(
+                wv,
+                ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+            )
+            wv.visibility = View.VISIBLE
+            wv.requestFocus()
+            showHint("已切換為網頁檢視模式，按 [返回鍵] 退出")
+        } else {
+            Toast.makeText(this, "網頁視圖未就緒", Toast.LENGTH_SHORT).show()
+        }
     }
 
     /**
@@ -193,7 +241,9 @@ class PlayerActivity : AppCompatActivity() {
                         when (playbackState) {
                             Player.STATE_READY -> {
                                 streamRetryCount = 0 // 播放就緒時歸零重試計數
+                                handler.removeCallbacks(sniffTimeoutRunnable)
                                 layoutPlayerLoading.visibility = View.GONE
+                                btnDirectWebPlay.visibility = View.GONE
                                 if (duration > 0) {
                                     tvTotalTime.text = formatTime(duration)
                                 } else {
@@ -220,9 +270,10 @@ class PlayerActivity : AppCompatActivity() {
                             tvPlayerLoadingStatus.text = "播放失敗，正在重新嗅探備援串流 ($streamRetryCount/$MAX_STREAM_RETRY)..."
                             retryCurrentEpisode()
                         } else {
-                            // 超過重試上限停止，給出明確引導
                             layoutPlayerLoading.visibility = View.VISIBLE
-                            tvPlayerLoadingStatus.text = "播放失敗 (${error.errorCodeName})，已達重試上限，請按返回鍵切換線路或集數"
+                            tvPlayerLoadingStatus.text = "影片播放失敗: ${error.errorCodeName}，按返回鍵更換線路"
+                            btnDirectWebPlay.visibility = View.VISIBLE
+                            btnDirectWebPlay.requestFocus()
                         }
                     }
                 })
@@ -248,6 +299,14 @@ class PlayerActivity : AppCompatActivity() {
         Log.i(TAG, "點擊海報開始嗅探: title=${drama.title}, detailUrl=${drama.detailUrl}")
         layoutPlayerLoading.visibility = View.VISIBLE
         tvPlayerLoadingStatus.text = "正在嗅探真實影片串流，請稍候..."
+        tvPlayerLoadingUrl.visibility = View.VISIBLE
+        tvPlayerLoadingUrl.text = "目標: ${drama.detailUrl}"
+        btnDirectWebPlay.visibility = View.GONE
+        layoutWebViewContainer.visibility = View.GONE
+
+        // 設定 12 秒嗅探超時保護計時器
+        handler.removeCallbacks(sniffTimeoutRunnable)
+        handler.postDelayed(sniffTimeoutRunnable, SNIFF_TIMEOUT_MS)
 
         webScraperBridge.loadDramaDetail(
             detailUrl = drama.detailUrl,
@@ -259,6 +318,7 @@ class PlayerActivity : AppCompatActivity() {
                 }
             },
             onStreamFound = { streamUrl ->
+                handler.removeCallbacks(sniffTimeoutRunnable)
                 if (streamUrl.isNotEmpty()) {
                     playStream(streamUrl)
                 } else {
@@ -266,8 +326,10 @@ class PlayerActivity : AppCompatActivity() {
                     tvPlayerLoadingStatus.text = if (!webScraperBridge.isWebViewSupported) {
                         "系統缺少 Android System WebView 元件，無法嗅探影片"
                     } else {
-                        "嗅探串流超時，請按返回鍵重試或切換線路"
+                        "嗅探串流逾時，可點擊下方按鈕直接網頁播放"
                     }
+                    btnDirectWebPlay.visibility = View.VISIBLE
+                    btnDirectWebPlay.requestFocus()
                 }
             }
         )
@@ -280,6 +342,10 @@ class PlayerActivity : AppCompatActivity() {
         val player = exoPlayer ?: return
         Log.i(TAG, "原生播放器開始載入串流: $streamUrl")
         try {
+            handler.removeCallbacks(sniffTimeoutRunnable)
+            btnDirectWebPlay.visibility = View.GONE
+            layoutWebViewContainer.visibility = View.GONE
+
             val mediaItem = MediaItem.fromUri(Uri.parse(streamUrl))
             player.setMediaItem(mediaItem)
             player.prepare()
@@ -305,13 +371,23 @@ class PlayerActivity : AppCompatActivity() {
         exoPlayer?.stop()
         layoutPlayerLoading.visibility = View.VISIBLE
         tvPlayerLoadingStatus.text = "正在切換至【${targetEpisode.title}】..."
+        tvPlayerLoadingUrl.visibility = View.VISIBLE
+        tvPlayerLoadingUrl.text = "目標: ${targetEpisode.url}"
+        btnDirectWebPlay.visibility = View.GONE
+        layoutWebViewContainer.visibility = View.GONE
+
+        handler.removeCallbacks(sniffTimeoutRunnable)
+        handler.postDelayed(sniffTimeoutRunnable, SNIFF_TIMEOUT_MS)
 
         webScraperBridge.sniffEpisodeStream(targetEpisode.url) { streamUrl ->
+            handler.removeCallbacks(sniffTimeoutRunnable)
             if (streamUrl.isNotEmpty()) {
                 playStream(streamUrl)
             } else {
                 layoutPlayerLoading.visibility = View.VISIBLE
-                tvPlayerLoadingStatus.text = "嗅探此集串流超時，請按返回鍵嘗試其他集數"
+                tvPlayerLoadingStatus.text = "嗅探此集串流逾時，可點擊下方直接網頁播放"
+                btnDirectWebPlay.visibility = View.VISIBLE
+                btnDirectWebPlay.requestFocus()
             }
         }
     }
@@ -346,7 +422,9 @@ class PlayerActivity : AppCompatActivity() {
                     playStream(streamUrl)
                 } else {
                     layoutPlayerLoading.visibility = View.VISIBLE
-                    tvPlayerLoadingStatus.text = "重試嗅探超時，請按返回鍵更換播放線路"
+                    tvPlayerLoadingStatus.text = "重試嗅探超時，請更換線路或直接網頁播放"
+                    btnDirectWebPlay.visibility = View.VISIBLE
+                    btnDirectWebPlay.requestFocus()
                 }
             }
         } else {
@@ -359,20 +437,17 @@ class PlayerActivity : AppCompatActivity() {
      */
     private fun showEpisodeSheet(show: Boolean) {
         if (show) {
-            hideController()
             layoutEpisodeSheet.visibility = View.VISIBLE
-            rvEpisodeGrid.post {
-                rvEpisodeGrid.findViewHolderForAdapterPosition(currentEpisodeIndex)?.itemView?.requestFocus()
-            }
+            rvEpisodeGrid.requestFocus()
+            hideController()
         } else {
             layoutEpisodeSheet.visibility = View.GONE
+            playerView.requestFocus()
         }
     }
 
-    private fun isEpisodeSheetVisible(): Boolean = layoutEpisodeSheet.visibility == View.VISIBLE
-
     /**
-     * 暫時顯示原生電視控制 HUD，幾秒後自動隱藏
+     * 顯示控制列並啟動 5 秒自動隱藏
      */
     private fun showControllerTemporarily() {
         layoutController.visibility = View.VISIBLE
@@ -389,71 +464,74 @@ class PlayerActivity : AppCompatActivity() {
         tvPlayerHint.text = message
         tvPlayerHint.visibility = View.VISIBLE
         tvPlayerHint.alpha = 1f
-        handler.removeCallbacks(hideHintRunnable)
-        handler.postDelayed(hideHintRunnable, 2000L)
-    }
-
-    private val hideHintRunnable = Runnable {
-        tvPlayerHint.animate().alpha(0f).setDuration(300).withEndAction {
+        tvPlayerHint.animate().alpha(0f).setDuration(500).setStartDelay(2000).withEndAction {
             tvPlayerHint.visibility = View.GONE
         }.start()
     }
 
-    private fun formatTime(millis: Long): String {
-        val totalSeconds = (millis / 1000).coerceAtLeast(0)
-        val minutes = totalSeconds / 60
-        val seconds = totalSeconds % 60
-        return String.format("%02d:%02d", minutes, seconds)
+    private fun formatTime(ms: Long): String {
+        val totalSec = ms / 1000
+        val min = totalSec / 60
+        val sec = totalSec % 60
+        return String.format("%02d:%02d", min, sec)
     }
 
-    /**
-     * 電視遙控器專用快捷鍵處理
-     */
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         val keyCode = event.keyCode
         val action = event.action
 
-        // 1. 選集網格開啟時的事件處理
-        if (isEpisodeSheetVisible()) {
-            if (keyCode == KeyEvent.KEYCODE_BACK && action == KeyEvent.ACTION_DOWN) {
-                showEpisodeSheet(false)
-                return true
+        // 1. 若當前處於全螢幕網頁檢視模式，優先攔截返回鍵
+        if (layoutWebViewContainer.visibility == View.VISIBLE) {
+            if (action == KeyEvent.ACTION_DOWN && keyCode == KeyEvent.KEYCODE_BACK) {
+                val wv = webScraperBridge.getDetailWebView()
+                if (wv != null && wv.canGoBack()) {
+                    wv.goBack()
+                    return true
+                } else {
+                    layoutWebViewContainer.visibility = View.GONE
+                    layoutWebViewContainer.removeAllViews()
+                    showHint("已關閉網頁檢視")
+                    return true
+                }
             }
-            if (keyCode == KeyEvent.KEYCODE_MENU && action == KeyEvent.ACTION_DOWN) {
+            return super.dispatchKeyEvent(event)
+        }
+
+        // 2. 選集介面已開啟時的按鍵處理
+        if (layoutEpisodeSheet.visibility == View.VISIBLE) {
+            if (action == KeyEvent.ACTION_DOWN && (keyCode == KeyEvent.KEYCODE_BACK || keyCode == KeyEvent.KEYCODE_ESCAPE)) {
                 showEpisodeSheet(false)
                 return true
             }
             return super.dispatchKeyEvent(event)
         }
 
-        // 2. 處理長按「確認鍵」呼出選集
+        // 3. 處理確認鍵 (長按呼出選集，短按暫停/播放)
         if (keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER) {
             if (action == KeyEvent.ACTION_DOWN) {
                 if (event.repeatCount == 0) {
                     isCenterLongPressTriggered = false
-                    handler.postDelayed(centerLongPressRunnable, 1000L)
+                    handler.postDelayed(centerLongPressRunnable, 700L)
                 }
+                return true
             } else if (action == KeyEvent.ACTION_UP) {
                 handler.removeCallbacks(centerLongPressRunnable)
-                if (isCenterLongPressTriggered) {
-                    isCenterLongPressTriggered = false
-                    return true
-                }
-                // 單擊確認鍵：切換暫停/播放並顯示控制列
-                val player = exoPlayer
-                if (player != null) {
-                    if (player.isPlaying) {
-                        player.pause()
-                        showHint("已暫停")
-                    } else {
-                        player.play()
-                        showHint("繼續播放")
+                if (!isCenterLongPressTriggered) {
+                    val player = exoPlayer
+                    if (player != null) {
+                        if (player.isPlaying) {
+                            player.pause()
+                            showControllerTemporarily()
+                            showHint("暫停播放")
+                        } else {
+                            player.play()
+                            hideController()
+                            showHint("繼續播放")
+                        }
                     }
-                    showControllerTemporarily()
                 }
                 return true
             }
-            return true
         }
 
         if (action == KeyEvent.ACTION_DOWN) {
@@ -529,6 +607,8 @@ class PlayerActivity : AppCompatActivity() {
     override fun onDestroy() {
         super.onDestroy()
         handler.removeCallbacksAndMessages(null)
+        handler.removeCallbacks(sniffTimeoutRunnable)
+        layoutWebViewContainer.removeAllViews()
         exoPlayer?.release()
         exoPlayer = null
         webScraperBridge.destroy()
